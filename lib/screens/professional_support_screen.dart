@@ -1157,6 +1157,77 @@ class _SupportTherapistDetailsScreenState
     final source = _certificateUrlFromProfile.trim().isNotEmpty
         ? _certificateUrlFromProfile.trim()
         : widget.therapist.certificateUrl.trim();
+    await _launchCertificateLink(source, download: download);
+  }
+
+  String _certificateDisplayName({
+    required String certificateName,
+    required String certificateUrl,
+  }) {
+    final name = certificateName.trim();
+    if (name.isNotEmpty) {
+      return name;
+    }
+    if (certificateUrl.trim().isNotEmpty) {
+      return 'Available via link';
+    }
+    return 'Not provided';
+  }
+
+  String? _normalizeCertificateUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) {
+      return null;
+    }
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme) {
+      return null;
+    }
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme != 'http' && scheme != 'https') {
+      return null;
+    }
+    return uri.toString();
+  }
+
+  String? _extractGoogleDriveFileId(Uri uri) {
+    if (!uri.host.contains('drive.google.com')) {
+      return null;
+    }
+    final byQuery = uri.queryParameters['id']?.trim();
+    if (byQuery != null && byQuery.isNotEmpty) {
+      return byQuery;
+    }
+    final segments = uri.pathSegments;
+    for (var i = 0; i < segments.length - 1; i += 1) {
+      if (segments[i] == 'd') {
+        final candidate = segments[i + 1].trim();
+        if (candidate.isNotEmpty) {
+          return candidate;
+        }
+      }
+    }
+    return null;
+  }
+
+  Uri _certificateUriForAction(String source, {required bool download}) {
+    final parsed = Uri.tryParse(source);
+    if (parsed == null || !download) {
+      return parsed ?? Uri();
+    }
+    final driveFileId = _extractGoogleDriveFileId(parsed);
+    if (driveFileId == null) {
+      return parsed;
+    }
+    return Uri.parse(
+      'https://drive.google.com/uc?export=download&id=$driveFileId',
+    );
+  }
+
+  Future<void> _launchCertificateLink(
+    String source, {
+    required bool download,
+  }) async {
     if (source.isEmpty) {
       if (!mounted) {
         return;
@@ -1166,8 +1237,8 @@ class _SupportTherapistDetailsScreenState
       );
       return;
     }
-    final uri = Uri.tryParse(source);
-    if (uri == null) {
+    final normalized = _normalizeCertificateUrl(source);
+    if (normalized == null) {
       if (!mounted) {
         return;
       }
@@ -1176,6 +1247,7 @@ class _SupportTherapistDetailsScreenState
       ).showSnackBar(const SnackBar(content: Text('Invalid certificate URL.')));
       return;
     }
+    final uri = _certificateUriForAction(normalized, download: download);
     final launched = await launchUrl(
       uri,
       mode: download
@@ -1198,6 +1270,13 @@ class _SupportTherapistDetailsScreenState
     final safePackageIndex = _selectedPackageIndexWithin(packages.length);
     final selectedPackage = packages[safePackageIndex];
     final years = _yearsExp(therapist);
+    final effectiveCertificateName =
+        _certificatePdfNameFromProfile.trim().isNotEmpty
+        ? _certificatePdfNameFromProfile
+        : therapist.certificatePdfName;
+    final effectiveCertificateUrl = _certificateUrlFromProfile.trim().isNotEmpty
+        ? _certificateUrlFromProfile
+        : therapist.certificateUrl;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF1F5F3),
@@ -1333,11 +1412,12 @@ class _SupportTherapistDetailsScreenState
                         _DetailLine(
                           icon: Icons.picture_as_pdf_outlined,
                           title: 'Certificate PDF',
-                          value: _certificatePdfNameFromProfile.trim().isEmpty
-                              ? 'Not provided'
-                              : _certificatePdfNameFromProfile.trim(),
+                          value: _certificateDisplayName(
+                            certificateName: effectiveCertificateName,
+                            certificateUrl: effectiveCertificateUrl,
+                          ),
                         ),
-                        if (_certificateUrlFromProfile.trim().isNotEmpty) ...[
+                        if (effectiveCertificateUrl.trim().isNotEmpty) ...[
                           const SizedBox(height: 10),
                           Wrap(
                             spacing: 8,
@@ -1769,6 +1849,98 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
     return 'Not provided';
   }
 
+  String _certificateDisplayName({
+    required String certificateName,
+    required String certificateUrl,
+  }) {
+    final name = certificateName.trim();
+    if (name.isNotEmpty) {
+      return name;
+    }
+    if (certificateUrl.trim().isNotEmpty) {
+      return 'Available via link';
+    }
+    return 'Not provided';
+  }
+
+  String? _normalizeCertificateUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) {
+      return null;
+    }
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme) {
+      return null;
+    }
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme != 'http' && scheme != 'https') {
+      return null;
+    }
+    return uri.toString();
+  }
+
+  String? _extractGoogleDriveFileId(Uri uri) {
+    if (!uri.host.contains('drive.google.com')) {
+      return null;
+    }
+    final byQuery = uri.queryParameters['id']?.trim();
+    if (byQuery != null && byQuery.isNotEmpty) {
+      return byQuery;
+    }
+    final segments = uri.pathSegments;
+    for (var i = 0; i < segments.length - 1; i += 1) {
+      if (segments[i] == 'd') {
+        final candidate = segments[i + 1].trim();
+        if (candidate.isNotEmpty) {
+          return candidate;
+        }
+      }
+    }
+    return null;
+  }
+
+  Uri _certificateUriForAction(String source, {required bool download}) {
+    final parsed = Uri.tryParse(source);
+    if (parsed == null || !download) {
+      return parsed ?? Uri();
+    }
+    final driveFileId = _extractGoogleDriveFileId(parsed);
+    if (driveFileId == null) {
+      return parsed;
+    }
+    return Uri.parse(
+      'https://drive.google.com/uc?export=download&id=$driveFileId',
+    );
+  }
+
+  Future<void> _launchCertificateLink(
+    String source, {
+    required bool download,
+  }) async {
+    final normalized = _normalizeCertificateUrl(source);
+    if (normalized == null) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Invalid certificate URL.')));
+      return;
+    }
+    final uri = _certificateUriForAction(normalized, download: download);
+    final launched = await launchUrl(
+      uri,
+      mode: download
+          ? LaunchMode.externalApplication
+          : LaunchMode.platformDefault,
+    );
+    if (!launched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open certificate link.')),
+      );
+    }
+  }
+
   Future<void> _showTherapistProfileSheet() async {
     await showDialog<void>(
       context: context,
@@ -1778,9 +1950,10 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
         final yearsText = therapist.yearsOfExperience > 0
             ? '${therapist.yearsOfExperience} years of practice'
             : 'Experience not set';
-        final certificateText = therapist.certificatePdfName.trim().isEmpty
-            ? 'Not provided'
-            : therapist.certificatePdfName.trim();
+        final certificateText = _certificateDisplayName(
+          certificateName: therapist.certificatePdfName,
+          certificateUrl: therapist.certificateUrl,
+        );
         final certificateUrl = therapist.certificateUrl.trim();
         return Dialog(
           insetPadding: const EdgeInsets.symmetric(
@@ -1875,13 +2048,9 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
                           children: [
                             OutlinedButton.icon(
                               onPressed: () async {
-                                final uri = Uri.tryParse(certificateUrl);
-                                if (uri == null) {
-                                  return;
-                                }
-                                await launchUrl(
-                                  uri,
-                                  mode: LaunchMode.platformDefault,
+                                await _launchCertificateLink(
+                                  certificateUrl,
+                                  download: false,
                                 );
                               },
                               icon: const Icon(Icons.open_in_new_rounded),
@@ -1889,13 +2058,9 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
                             ),
                             OutlinedButton.icon(
                               onPressed: () async {
-                                final uri = Uri.tryParse(certificateUrl);
-                                if (uri == null) {
-                                  return;
-                                }
-                                await launchUrl(
-                                  uri,
-                                  mode: LaunchMode.externalApplication,
+                                await _launchCertificateLink(
+                                  certificateUrl,
+                                  download: true,
                                 );
                               },
                               icon: const Icon(Icons.download_rounded),

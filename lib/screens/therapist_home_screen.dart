@@ -1,12 +1,7 @@
 import 'dart:math' as math;
-import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -1294,10 +1289,8 @@ class _TherapistProfileSettingsScreenState
   late final TextEditingController _years;
   late final TextEditingController _credentials;
   late final TextEditingController _reportSuggestionsController;
+  late final TextEditingController _certificateLinkController;
   late final TextEditingController _about;
-  String? _certificatePdfName;
-  String? _certificateUrl;
-  bool _uploadingCertificate = false;
   bool _saving = false;
 
   @override
@@ -1317,9 +1310,11 @@ class _TherapistProfileSettingsScreenState
     _reportSuggestionsController = TextEditingController(
       text: widget.initialReportSuggestions.join('\n'),
     );
+    _certificateLinkController = TextEditingController(
+      text: widget.initialCertificateUrl ?? '',
+    );
+    _certificateLinkController.addListener(_onCertificateLinkChanged);
     _about = TextEditingController(text: widget.profile.bio);
-    _certificatePdfName = widget.initialCertificatePdfName;
-    _certificateUrl = widget.initialCertificateUrl;
     _selected.addAll(widget.profile.specializations);
   }
 
@@ -1332,8 +1327,16 @@ class _TherapistProfileSettingsScreenState
     _years.dispose();
     _credentials.dispose();
     _reportSuggestionsController.dispose();
+    _certificateLinkController.removeListener(_onCertificateLinkChanged);
+    _certificateLinkController.dispose();
     _about.dispose();
     super.dispose();
+  }
+
+  void _onCertificateLinkChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _openPricing() async {
@@ -1380,6 +1383,22 @@ class _TherapistProfileSettingsScreenState
     }
 
     final years = int.tryParse(_years.text.trim()) ?? 0;
+    final rawCertificateLink = _certificateLinkController.text.trim();
+    final normalizedCertificateLink = _normalizeCertificateUrl(
+      rawCertificateLink,
+    );
+    if (rawCertificateLink.isNotEmpty && normalizedCertificateLink == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid certificate URL (http/https).'),
+        ),
+      );
+      return;
+    }
+    final certificateUrlToSave = normalizedCertificateLink ?? '';
+    final certificateNameToSave = certificateUrlToSave.isEmpty
+        ? ''
+        : _certificateNameFromUrl(certificateUrlToSave);
 
     setState(() => _saving = true);
     try {
@@ -1406,8 +1425,8 @@ class _TherapistProfileSettingsScreenState
         reportSuggestions: _parseReportSuggestions(
           _reportSuggestionsController.text,
         ),
-        certificatePdfName: _certificatePdfName,
-        certificateUrl: _certificateUrl,
+        certificatePdfName: certificateNameToSave,
+        certificateUrl: certificateUrlToSave,
       );
 
       if (mounted) {
@@ -1420,267 +1439,105 @@ class _TherapistProfileSettingsScreenState
     }
   }
 
-  Future<void> _pickCertificatePdf() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      return;
-    }
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['pdf'],
-      withData: true,
-      withReadStream: true,
-    );
-    if (result == null || result.files.isEmpty) {
-      return;
-    }
-    final file = result.files.single;
-    final fileName = file.name.trim();
-    final bytes = await _resolvePickedFileBytes(file);
-    if (bytes == null || bytes.isEmpty) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Unable to read PDF bytes. Please try another file.'),
-        ),
-      );
-      return;
-    }
-
-    await _uploadCertificateBytes(
-      uid: uid,
-      fileName: fileName,
-      bytes: bytes,
-      successMessage: 'Certificate uploaded: $fileName',
-    );
-  }
-
-  Future<Uint8List?> _resolvePickedFileBytes(PlatformFile file) async {
-    if (file.bytes != null && file.bytes!.isNotEmpty) {
-      return file.bytes!;
-    }
-    final stream = file.readStream;
-    if (stream == null) {
+  String? _normalizeCertificateUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) {
       return null;
     }
-    final builder = BytesBuilder(copy: false);
-    await for (final chunk in stream) {
-      builder.add(chunk);
-    }
-    final bytes = builder.takeBytes();
-    if (bytes.isEmpty) {
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme) {
       return null;
     }
-    return bytes;
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme != 'http' && scheme != 'https') {
+      return null;
+    }
+    return uri.toString();
   }
 
-  Future<void> _uploadCertificateBytes({
-    required String uid,
-    required String fileName,
-    required Uint8List bytes,
-    required String successMessage,
-  }) async {
-    if (bytes.isEmpty) {
-      return;
+  String _certificateNameFromUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      return 'Certificate link';
     }
-
-    setState(() => _uploadingCertificate = true);
-    try {
-      final certificateUrl = await _uploadCertificateToStorage(
-        uid: uid,
-        fileName: fileName,
-        bytes: bytes,
-      );
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _certificatePdfName = fileName;
-        _certificateUrl = certificateUrl;
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(successMessage)));
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Upload failed: $error')));
-    } finally {
-      if (mounted) {
-        setState(() => _uploadingCertificate = false);
+    final segments = uri.pathSegments.where((item) => item.isNotEmpty).toList();
+    if (segments.isNotEmpty) {
+      final tail = Uri.decodeComponent(segments.last);
+      final cleaned = tail.trim();
+      if (cleaned.isNotEmpty &&
+          cleaned != 'view' &&
+          cleaned != 'open' &&
+          cleaned != 'preview') {
+        return cleaned;
       }
     }
+    return 'Certificate link';
   }
 
-  Future<String> _uploadCertificateToStorage({
-    required String uid,
-    required String fileName,
-    required Uint8List bytes,
-  }) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final safeName = _sanitizeFileName(fileName);
-    final objectPath = 'therapist_certificates/$uid/${timestamp}_$safeName';
-    final candidates = _storageBucketCandidates();
-    Object? lastError;
-
-    for (final bucket in candidates) {
-      try {
-        final storage = bucket == null
-            ? FirebaseStorage.instance
-            : FirebaseStorage.instanceFor(bucket: bucket);
-        final ref = storage.ref(objectPath);
-        await ref.putData(
-          bytes,
-          SettableMetadata(contentType: 'application/pdf'),
-        );
-        return _resolveDownloadUrlWithRetry(ref);
-      } catch (error) {
-        final message = error.toString();
-        final objectNotFound = message.contains('object-not-found');
-        if (objectNotFound) {
-          try {
-            final fallbackStorage = bucket == null
-                ? FirebaseStorage.instance
-                : FirebaseStorage.instanceFor(bucket: bucket);
-            final fallbackRef = fallbackStorage.ref(objectPath);
-            await _uploadViaTempFile(fallbackRef, bytes);
-            return _resolveDownloadUrlWithRetry(fallbackRef);
-          } catch (_) {
-            // Keep trying other bucket candidates.
-          }
+  String? _extractGoogleDriveFileId(Uri uri) {
+    if (!uri.host.contains('drive.google.com')) {
+      return null;
+    }
+    final byQuery = uri.queryParameters['id']?.trim();
+    if (byQuery != null && byQuery.isNotEmpty) {
+      return byQuery;
+    }
+    final segments = uri.pathSegments;
+    for (var i = 0; i < segments.length - 1; i += 1) {
+      if (segments[i] == 'd') {
+        final candidate = segments[i + 1].trim();
+        if (candidate.isNotEmpty) {
+          return candidate;
         }
-        lastError = error;
       }
     }
+    return null;
+  }
 
-    throw StateError(
-      'Unable to upload certificate to Firebase Storage. ${lastError ?? ''}',
+  Uri _certificateUriForAction(String source, {required bool download}) {
+    final parsed = Uri.tryParse(source);
+    if (parsed == null || !download) {
+      return parsed ?? Uri();
+    }
+    final driveFileId = _extractGoogleDriveFileId(parsed);
+    if (driveFileId == null) {
+      return parsed;
+    }
+    return Uri.parse(
+      'https://drive.google.com/uc?export=download&id=$driveFileId',
     );
   }
 
-  Future<void> _uploadViaTempFile(Reference ref, Uint8List bytes) async {
-    final tempDir = Directory.systemTemp;
-    final tempFile = File(
-      '${tempDir.path}${Platform.pathSeparator}autiease_certificate_${DateTime.now().microsecondsSinceEpoch}.pdf',
-    );
-    await tempFile.writeAsBytes(bytes, flush: true);
-    try {
-      await ref.putFile(
-        tempFile,
-        SettableMetadata(contentType: 'application/pdf'),
-      );
-    } finally {
-      if (await tempFile.exists()) {
-        await tempFile.delete();
-      }
-    }
-  }
-
-  Future<String> _resolveDownloadUrlWithRetry(Reference ref) async {
-    Object? lastError;
-    for (var attempt = 0; attempt < 4; attempt += 1) {
-      try {
-        return await ref.getDownloadURL();
-      } catch (error) {
-        lastError = error;
-        if (!error.toString().contains('object-not-found')) {
-          rethrow;
-        }
-        await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
-      }
-    }
-    throw StateError('Unable to resolve certificate download URL: $lastError');
-  }
-
-  List<String?> _storageBucketCandidates() {
-    final configuredRaw = Firebase.app().options.storageBucket;
-    final configured = (configuredRaw ?? '').trim();
-    final normalizedConfigured = configured
-        .replaceFirst(RegExp(r'^gs://'), '')
-        .replaceFirst(RegExp(r'/$'), '');
-
-    final projectId = Firebase.app().options.projectId.trim();
-    final candidates = <String?>[];
-
-    candidates.add(null); // default app storage
-    if (normalizedConfigured.isNotEmpty) {
-      candidates.add(normalizedConfigured);
-      if (normalizedConfigured.endsWith('.firebasestorage.app')) {
-        final prefix = normalizedConfigured.replaceFirst(
-          '.firebasestorage.app',
-          '',
-        );
-        candidates.add('$prefix.appspot.com');
-      } else if (normalizedConfigured.endsWith('.appspot.com')) {
-        final prefix = normalizedConfigured.replaceFirst('.appspot.com', '');
-        candidates.add('$prefix.firebasestorage.app');
-      }
-    }
-
-    if (projectId.isNotEmpty) {
-      candidates.add('$projectId.appspot.com');
-      candidates.add('$projectId.firebasestorage.app');
-    }
-
-    final seen = <String?>{};
-    final unique = <String?>[];
-    for (final item in candidates) {
-      if (item != null && item.trim().isEmpty) {
-        continue;
-      }
-      if (seen.add(item)) {
-        unique.add(item);
-      }
-    }
-    return unique;
-  }
-
-  String _sanitizeFileName(String value) {
-    final normalized = value
-        .replaceAll(RegExp(r'\s+'), '_')
-        .replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '');
-    if (normalized.isEmpty) {
-      return 'certificate.pdf';
-    }
-    return normalized.toLowerCase().endsWith('.pdf')
-        ? normalized
-        : '$normalized.pdf';
-  }
-
-  Future<void> _openCertificateUrl(String? url) async {
+  Future<void> _openCertificateUrl(
+    String? url, {
+    required bool download,
+  }) async {
     final value = (url ?? '').trim();
     if (value.isEmpty) {
       return;
     }
-    final uri = Uri.tryParse(value);
-    if (uri == null) {
+    final normalized = _normalizeCertificateUrl(value);
+    if (normalized == null) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Invalid certificate URL.')));
       return;
     }
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
-  }
-
-  Widget _certificateUploadStatusText() {
-    if (_uploadingCertificate) {
-      return const Text(
-        'Uploading certificate...',
-        style: TextStyle(color: Color(0xFF0F766E), fontWeight: FontWeight.w500),
+    final uri = _certificateUriForAction(normalized, download: download);
+    final launched = await launchUrl(
+      uri,
+      mode: download
+          ? LaunchMode.externalApplication
+          : LaunchMode.platformDefault,
+    );
+    if (!launched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open certificate link.')),
       );
     }
-    if ((_certificatePdfName ?? '').trim().isEmpty) {
-      return const SizedBox.shrink();
-    }
-    return Text(
-      'Selected: $_certificatePdfName',
-      style: const TextStyle(
-        color: Color(0xFF334155),
-        fontWeight: FontWeight.w500,
-      ),
-    );
   }
 
   List<String> _parseReportSuggestions(String raw) {
@@ -1800,25 +1657,47 @@ class _TherapistProfileSettingsScreenState
                       lines: 4,
                     ),
                     const SizedBox(height: 8),
-                    _input('About You', _about, lines: 4),
-                    const SizedBox(height: 10),
-                    OutlinedButton.icon(
-                      onPressed: _uploadingCertificate
-                          ? null
-                          : _pickCertificatePdf,
-                      icon: const Icon(Icons.upload_file_outlined),
-                      label: const Text('Upload Certificate PDF'),
+                    _input(
+                      'Certificate Link (Google Drive share link)',
+                      _certificateLinkController,
+                      keyboard: TextInputType.url,
                     ),
-                    if (_uploadingCertificate ||
-                        _certificatePdfName != null) ...[
-                      const SizedBox(height: 6),
-                      _certificateUploadStatusText(),
-                      if ((_certificateUrl ?? '').trim().isNotEmpty)
-                        TextButton(
-                          onPressed: () => _openCertificateUrl(_certificateUrl),
-                          child: const Text('View Uploaded Certificate'),
-                        ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Paste a public/shareable certificate PDF link for parents to view and download.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF6B7280),
+                        height: 1.3,
+                      ),
+                    ),
+                    if (_certificateLinkController.text.trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () => _openCertificateUrl(
+                              _certificateLinkController.text,
+                              download: false,
+                            ),
+                            icon: const Icon(Icons.open_in_new_rounded),
+                            label: const Text('View Certificate'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => _openCertificateUrl(
+                              _certificateLinkController.text,
+                              download: true,
+                            ),
+                            icon: const Icon(Icons.download_rounded),
+                            label: const Text('Download Certificate'),
+                          ),
+                        ],
+                      ),
                     ],
+                    const SizedBox(height: 8),
+                    _input('About You', _about, lines: 4),
                     const SizedBox(height: 12),
                     if (widget.setupMode)
                       Row(
@@ -2059,33 +1938,44 @@ class _TherapistProfileSettingsScreenState
                             lines: 4,
                           ),
                           const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: _uploadingCertificate
-                                ? null
-                                : _pickCertificatePdf,
-                            icon: const Icon(Icons.upload_file_outlined),
-                            label: Text(
-                              _uploadingCertificate
-                                  ? 'Uploading...'
-                                  : _certificatePdfName == null
-                                  ? 'Upload Certificate PDF'
-                                  : 'Selected: $_certificatePdfName',
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              minimumSize: const Size.fromHeight(42),
-                              alignment: Alignment.centerLeft,
-                              side: const BorderSide(color: Color(0xFF11B5CF)),
-                              foregroundColor: const Color(0xFF11B5CF),
+                          _input(
+                            'Certificate Link (Google Drive share link)',
+                            _certificateLinkController,
+                            keyboard: TextInputType.url,
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Paste a public/shareable certificate PDF link for parent access.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF6B7280),
+                              height: 1.3,
                             ),
                           ),
-                          if ((_certificateUrl ?? '').trim().isNotEmpty)
+                          if (_certificateLinkController.text.trim().isNotEmpty)
                             Align(
                               alignment: Alignment.centerLeft,
-                              child: TextButton(
-                                onPressed: () =>
-                                    _openCertificateUrl(_certificateUrl),
-                                child: const Text('View Uploaded Certificate'),
+                              child: Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  OutlinedButton.icon(
+                                    onPressed: () => _openCertificateUrl(
+                                      _certificateLinkController.text,
+                                      download: false,
+                                    ),
+                                    icon: const Icon(Icons.open_in_new_rounded),
+                                    label: const Text('View Certificate'),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: () => _openCertificateUrl(
+                                      _certificateLinkController.text,
+                                      download: true,
+                                    ),
+                                    icon: const Icon(Icons.download_rounded),
+                                    label: const Text('Download Certificate'),
+                                  ),
+                                ],
                               ),
                             ),
                         ],
