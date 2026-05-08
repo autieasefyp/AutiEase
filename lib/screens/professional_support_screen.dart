@@ -8,6 +8,7 @@ import '../models/app_models.dart';
 import '../repositories/app_repositories.dart';
 import '../utils/app_colors.dart';
 import '../widgets/session_guard.dart';
+import '../widgets/therapist_subscription_warning_dialog.dart';
 import 'therapist_chat_screen.dart';
 
 class _TherapistPlaceholderAvatar extends StatelessWidget {
@@ -727,7 +728,7 @@ class _TherapistListCard extends StatelessWidget {
     if (specs.isNotEmpty) {
       return specs.first;
     }
-    return 'Specialization not set';
+    return 'Not provided';
   }
 
   int _yearsExp(TherapistProfile profile, int fallback) {
@@ -828,9 +829,7 @@ class _TherapistListCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              therapist.bio.isEmpty
-                  ? 'Specialized autism support with personalized care plans.'
-                  : therapist.bio,
+              therapist.bio.isEmpty ? 'Not provided' : therapist.bio,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -1003,6 +1002,8 @@ class _SupportTherapistDetailsScreenState
   bool _loadingTherapistMeta = true;
   int _yearsFromProfile = 0;
   String _credentialsFromProfile = '';
+  String _certificatePdfNameFromProfile = '';
+  String _certificateUrlFromProfile = '';
   List<_SupportServicePackage> _packages = const <_SupportServicePackage>[];
   int _activePackageIndex = 0;
 
@@ -1027,6 +1028,9 @@ class _SupportTherapistDetailsScreenState
       setState(() {
         _yearsFromProfile = intFrom(data['yearsOfExperience']);
         _credentialsFromProfile = (data['credentials'] ?? '').toString();
+        _certificatePdfNameFromProfile = (data['certificatePdfName'] ?? '')
+            .toString();
+        _certificateUrlFromProfile = (data['certificateUrl'] ?? '').toString();
         _packages = parsed;
         _loadingTherapistMeta = false;
       });
@@ -1098,7 +1102,7 @@ class _SupportTherapistDetailsScreenState
     if (specs.isNotEmpty) {
       return specs.first;
     }
-    return 'Specialization not set';
+    return 'Not provided';
   }
 
   int _yearsExp(TherapistProfile profile) {
@@ -1130,13 +1134,59 @@ class _SupportTherapistDetailsScreenState
       ).showSnackBar(const SnackBar(content: Text('Coming soon')));
       return;
     }
+    final accepted = await showTherapistVerificationWarningDialog(context);
+    if (!accepted) {
+      return;
+    }
+
     setState(() => _isSubscribing = true);
-    final subscribed = await widget.onSubscribe();
-    if (!mounted) return;
-    setState(() {
-      _isSubscribing = false;
-      if (subscribed) _isSubscribed = true;
-    });
+    try {
+      final subscribed = await widget.onSubscribe();
+      if (!mounted) return;
+      setState(() {
+        if (subscribed) _isSubscribed = true;
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isSubscribing = false);
+      }
+    }
+  }
+
+  Future<void> _openCertificate({required bool download}) async {
+    final source = _certificateUrlFromProfile.trim().isNotEmpty
+        ? _certificateUrlFromProfile.trim()
+        : widget.therapist.certificateUrl.trim();
+    if (source.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Certificate not available.')),
+      );
+      return;
+    }
+    final uri = Uri.tryParse(source);
+    if (uri == null) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Invalid certificate URL.')));
+      return;
+    }
+    final launched = await launchUrl(
+      uri,
+      mode: download
+          ? LaunchMode.externalApplication
+          : LaunchMode.platformDefault,
+    );
+    if (!launched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open certificate link.')),
+      );
+    }
   }
 
   @override
@@ -1276,9 +1326,38 @@ class _SupportTherapistDetailsScreenState
                           icon: Icons.verified_outlined,
                           title: 'Certifications',
                           value: _credentialsFromProfile.trim().isEmpty
-                              ? 'Board Certified, Licensed Therapist'
+                              ? 'Not provided'
                               : _credentialsFromProfile.trim(),
                         ),
+                        const SizedBox(height: 10),
+                        _DetailLine(
+                          icon: Icons.picture_as_pdf_outlined,
+                          title: 'Certificate PDF',
+                          value: _certificatePdfNameFromProfile.trim().isEmpty
+                              ? 'Not provided'
+                              : _certificatePdfNameFromProfile.trim(),
+                        ),
+                        if (_certificateUrlFromProfile.trim().isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    _openCertificate(download: false),
+                                icon: const Icon(Icons.open_in_new_rounded),
+                                label: const Text('View Certificate'),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    _openCertificate(download: true),
+                                icon: const Icon(Icons.download_rounded),
+                                label: const Text('Download Certificate'),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -1298,18 +1377,9 @@ class _SupportTherapistDetailsScreenState
                         const SizedBox(height: 10),
                         Text(
                           therapist.bio.isEmpty
-                              ? 'Specialized in autism support and therapeutic communication plans for children and families.'
+                              ? 'Not provided'
                               : therapist.bio,
                           style: const TextStyle(
-                            color: Color(0xFF4B5563),
-                            height: 1.5,
-                            fontSize: 13.6,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        const Text(
-                          'With extensive experience working with children and families, I provide personalized care and evidence-based therapeutic interventions to support your child\'s development and well-being.',
-                          style: TextStyle(
                             color: Color(0xFF4B5563),
                             height: 1.5,
                             fontSize: 13.6,
@@ -1696,7 +1766,7 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
     if (specs.isNotEmpty) {
       return specs.first;
     }
-    return 'Specialization not set';
+    return 'Not provided';
   }
 
   Future<void> _showTherapistProfileSheet() async {
@@ -1708,6 +1778,10 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
         final yearsText = therapist.yearsOfExperience > 0
             ? '${therapist.yearsOfExperience} years of practice'
             : 'Experience not set';
+        final certificateText = therapist.certificatePdfName.trim().isEmpty
+            ? 'Not provided'
+            : therapist.certificatePdfName.trim();
+        final certificateUrl = therapist.certificateUrl.trim();
         return Dialog(
           insetPadding: const EdgeInsets.symmetric(
             horizontal: 16,
@@ -1789,10 +1863,47 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
                         style: const TextStyle(height: 1.4),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                        'Certifications\nBoard Certified, Licensed Therapist',
-                        style: TextStyle(height: 1.4),
+                      Text(
+                        'Certificate PDF\n$certificateText',
+                        style: const TextStyle(height: 1.4),
                       ),
+                      if (certificateUrl.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final uri = Uri.tryParse(certificateUrl);
+                                if (uri == null) {
+                                  return;
+                                }
+                                await launchUrl(
+                                  uri,
+                                  mode: LaunchMode.platformDefault,
+                                );
+                              },
+                              icon: const Icon(Icons.open_in_new_rounded),
+                              label: const Text('View Certificate'),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final uri = Uri.tryParse(certificateUrl);
+                                if (uri == null) {
+                                  return;
+                                }
+                                await launchUrl(
+                                  uri,
+                                  mode: LaunchMode.externalApplication,
+                                );
+                              },
+                              icon: const Icon(Icons.download_rounded),
+                              label: const Text('Download Certificate'),
+                            ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 10),
                       const Divider(height: 1),
                       const SizedBox(height: 10),
@@ -1805,9 +1916,7 @@ class _DemoTherapistChatScreenState extends State<_DemoTherapistChatScreen> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        therapist.bio.isEmpty
-                            ? 'Specialized in autism spectrum disorders and speech development.'
-                            : therapist.bio,
+                        therapist.bio.isEmpty ? 'Not provided' : therapist.bio,
                         style: const TextStyle(height: 1.4),
                       ),
                       const SizedBox(height: 10),

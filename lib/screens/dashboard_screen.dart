@@ -7,6 +7,7 @@ import 'package:printing/printing.dart';
 
 import '../models/app_models.dart';
 import '../repositories/app_repositories.dart';
+import '../services/report_formatting.dart';
 import '../widgets/session_guard.dart';
 
 class DashboardScreen extends StatelessWidget {
@@ -563,6 +564,28 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
   List<TherapistProfile> _therapists = const <TherapistProfile>[];
   bool _loadingTherapists = true;
   bool _downloadingPdf = false;
+  late final DateTime _reportGeneratedAt;
+
+  List<String> _effectiveRecommendations() {
+    final custom = <String>[];
+    final seen = <String>{};
+    for (final therapist in _therapists) {
+      for (final suggestion in therapist.reportSuggestions) {
+        final normalized = suggestion.trim();
+        if (normalized.isEmpty) {
+          continue;
+        }
+        final key = normalized.toLowerCase();
+        if (seen.add(key)) {
+          custom.add(normalized);
+        }
+      }
+    }
+    if (custom.isNotEmpty) {
+      return custom.take(8).toList(growable: false);
+    }
+    return widget.report.recommendations;
+  }
 
   Future<bool> _isChatEnabled() async {
     final flags = await AppRepositories.content
@@ -573,6 +596,7 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _reportGeneratedAt = DateTime.now();
     _loadTherapists();
   }
 
@@ -714,7 +738,7 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
     await AppRepositories.support.sendMessage(
       threadId: thread.id,
       senderRole: 'parent',
-      body: _buildShareMessage(widget.report),
+      body: _buildStructuredReportContent().toShareMessage(),
     );
   }
 
@@ -726,7 +750,7 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
       _downloadingPdf = true;
     });
     try {
-      final bytes = await _buildPdfBytes(widget.report);
+      final bytes = await _buildPdfBytes(_buildStructuredReportContent());
       await Printing.sharePdf(
         bytes: bytes,
         filename: _pdfFileName(widget.report),
@@ -755,22 +779,30 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
     }
   }
 
-  String _buildShareMessage(_ReportData report) {
-    final sectionSummary = report.sections
-        .map((section) => '${section.title}: ${section.percentLabel}')
-        .join(' | ');
-    final recommendation = report.recommendations.isNotEmpty
-        ? report.recommendations.first
-        : 'No recommendations available.';
-    return [
-      'Shared Report: ${report.title} (${report.dateLabel})',
-      report.summaryText,
-      sectionSummary,
-      'Top Recommendation: $recommendation',
-    ].join('\n');
+  StructuredReportContent _buildStructuredReportContent() {
+    return ReportFormatter.build(
+      ReportFormattingInput(
+        title: widget.report.title,
+        periodLabel: widget.report.dateLabel,
+        childName: widget.childProfile.name,
+        generatedAt: _reportGeneratedAt,
+        summary: widget.report.summaryText,
+        sections: widget.report.sections
+            .map(
+              (section) => ReportFormattingSectionInput(
+                title: section.title,
+                percentLabel: section.percentLabel,
+                statusLabel: section.statusLabel,
+                explanation: section.body,
+              ),
+            )
+            .toList(growable: false),
+        recommendations: _effectiveRecommendations(),
+      ),
+    );
   }
 
-  Future<Uint8List> _buildPdfBytes(_ReportData report) async {
+  Future<Uint8List> _buildPdfBytes(StructuredReportContent content) async {
     final pdf = pw.Document();
     final baseStyle = pw.TextStyle(fontSize: 10, color: PdfColors.blueGrey800);
 
@@ -780,7 +812,7 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
         margin: const pw.EdgeInsets.all(24),
         build: (context) => [
           pw.Text(
-            report.title,
+            content.title,
             style: pw.TextStyle(
               fontSize: 20,
               fontWeight: pw.FontWeight.bold,
@@ -788,7 +820,14 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
             ),
           ),
           pw.SizedBox(height: 4),
-          pw.Text(report.dateLabel, style: baseStyle),
+          pw.Text('Report Period: ${content.periodLabel}', style: baseStyle),
+          pw.SizedBox(height: 2),
+          pw.Text('Child: ${content.childName}', style: baseStyle),
+          pw.SizedBox(height: 2),
+          pw.Text(
+            'Generated At: ${content.generatedAtLabel}',
+            style: baseStyle,
+          ),
           pw.SizedBox(height: 16),
           pw.Text(
             'Summary',
@@ -799,7 +838,7 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
             ),
           ),
           pw.SizedBox(height: 6),
-          pw.Text(report.summaryText, style: baseStyle),
+          pw.Text(content.summary, style: baseStyle),
           pw.SizedBox(height: 16),
           pw.Text(
             'Progress by Section',
@@ -810,8 +849,8 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
             ),
           ),
           pw.SizedBox(height: 8),
-          ...report.sections.map(
-            (section) => pw.Container(
+          ...content.sections.asMap().entries.map(
+            (entry) => pw.Container(
               margin: const pw.EdgeInsets.only(bottom: 8),
               padding: const pw.EdgeInsets.all(10),
               decoration: pw.BoxDecoration(
@@ -825,26 +864,32 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
                       pw.Text(
-                        section.title,
+                        '${entry.key + 1}. ${entry.value.title}',
                         style: pw.TextStyle(
                           fontWeight: pw.FontWeight.bold,
                           fontSize: 11,
                         ),
                       ),
-                      pw.Text(section.percentLabel, style: baseStyle),
+                      pw.Text(entry.value.percentLabel, style: baseStyle),
                     ],
                   ),
                   pw.SizedBox(height: 4),
-                  pw.Text(section.body, style: baseStyle),
+                  pw.Text(
+                    'Status: ${entry.value.statusLabel}',
+                    style: baseStyle,
+                  ),
                   pw.SizedBox(height: 4),
-                  pw.Text('Status: ${section.statusLabel}', style: baseStyle),
+                  pw.Text(
+                    'Notes: ${entry.value.explanation}',
+                    style: baseStyle,
+                  ),
                 ],
               ),
             ),
           ),
           pw.SizedBox(height: 8),
           pw.Text(
-            'Therapist Recommendations',
+            'Recommendations',
             style: pw.TextStyle(
               fontSize: 14,
               fontWeight: pw.FontWeight.bold,
@@ -852,10 +897,13 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
             ),
           ),
           pw.SizedBox(height: 6),
-          ...report.recommendations.map(
-            (item) => pw.Padding(
+          ...content.recommendations.asMap().entries.map(
+            (entry) => pw.Padding(
               padding: const pw.EdgeInsets.only(bottom: 4),
-              child: pw.Text('• $item', style: baseStyle),
+              child: pw.Text(
+                '${entry.key + 1}. ${entry.value}',
+                style: baseStyle,
+              ),
             ),
           ),
         ],
@@ -907,7 +955,7 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
                     _ProgressSectionCard(section: section),
                     const SizedBox(height: 10),
                   ],
-                  _RecommendationsCard(items: widget.report.recommendations),
+                  _RecommendationsCard(items: _effectiveRecommendations()),
                 ],
               ),
             ),
@@ -1496,7 +1544,7 @@ class _ShareReportSheetState extends State<_ShareReportSheet> {
                             ),
                             Text(
                               therapist.specializations.isEmpty
-                                  ? 'Behavioral Therapy'
+                                  ? 'Not provided'
                                   : therapist.specializations.first,
                               style: const TextStyle(
                                 fontSize: 12,

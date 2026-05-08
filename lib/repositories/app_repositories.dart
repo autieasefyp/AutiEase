@@ -378,6 +378,10 @@ class FirebaseUserRepository implements UserRepository {
       'availability': profile.availability,
       'photoUrl': profile.photoUrl,
       'isActive': profile.isActive,
+      'yearsOfExperience': profile.yearsOfExperience,
+      'certificatePdfName': profile.certificatePdfName,
+      'certificateUrl': profile.certificateUrl,
+      'reportSuggestions': profile.reportSuggestions,
       'updatedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));

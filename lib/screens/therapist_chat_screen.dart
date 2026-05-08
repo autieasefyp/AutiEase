@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_models.dart';
 import '../repositories/app_repositories.dart';
@@ -396,10 +397,14 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
       builder: (context) {
         final specialization = therapist.specializations.isNotEmpty
             ? therapist.specializations.first
-            : 'Specialization not set';
+            : 'Not provided';
         final yearsText = therapist.yearsOfExperience > 0
             ? '${therapist.yearsOfExperience} years of practice'
             : 'Experience not set';
+        final certificateText = therapist.certificatePdfName.trim().isEmpty
+            ? 'Not provided'
+            : therapist.certificatePdfName.trim();
+        final certificateUrl = therapist.certificateUrl.trim();
         return Dialog(
           insetPadding: const EdgeInsets.symmetric(
             horizontal: 16,
@@ -469,10 +474,45 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
                     const Divider(height: 1),
                     const SizedBox(height: 10),
                     Text('Experience\n$yearsText'),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Certifications\nBoard Certified, Licensed Therapist',
-                    ),
+                    const SizedBox(height: 10),
+                    Text('Certificate PDF\n$certificateText'),
+                    if (certificateUrl.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              final uri = Uri.tryParse(certificateUrl);
+                              if (uri == null) {
+                                return;
+                              }
+                              await launchUrl(
+                                uri,
+                                mode: LaunchMode.platformDefault,
+                              );
+                            },
+                            icon: const Icon(Icons.open_in_new_rounded),
+                            label: const Text('View Certificate'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              final uri = Uri.tryParse(certificateUrl);
+                              if (uri == null) {
+                                return;
+                              }
+                              await launchUrl(
+                                uri,
+                                mode: LaunchMode.externalApplication,
+                              );
+                            },
+                            icon: const Icon(Icons.download_rounded),
+                            label: const Text('Download Certificate'),
+                          ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 10),
                     const Divider(height: 1),
                     const SizedBox(height: 10),
@@ -485,9 +525,7 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      therapist.bio.isEmpty
-                          ? 'Specialized in autism spectrum disorders and speech development.'
-                          : therapist.bio,
+                      therapist.bio.isEmpty ? 'Not provided' : therapist.bio,
                       style: const TextStyle(height: 1.4),
                     ),
                     const SizedBox(height: 10),

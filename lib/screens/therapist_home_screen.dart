@@ -1,9 +1,14 @@
 import 'dart:math' as math;
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_models.dart';
 import '../repositories/app_repositories.dart';
@@ -29,6 +34,8 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
   String _contactEmail = '';
   String _contactPhone = '';
   String? _certificatePdfName;
+  String? _certificateUrl;
+  List<String> _reportSuggestions = const <String>[];
   List<TherapyPackage> _packages = const <TherapyPackage>[];
   bool _profilePromptDone = false;
   Map<String, bool> _notificationPrefs = _defaultTherapistNotificationPrefs;
@@ -63,9 +70,9 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
           : (profile?.displayName.trim().isNotEmpty == true
                 ? profile!.displayName.trim()
                 : (FirebaseAuth.instance.currentUser?.displayName
-                          ?.trim()
-                          .isNotEmpty ==
-                      true
+                              ?.trim()
+                              .isNotEmpty ==
+                          true
                       ? FirebaseAuth.instance.currentUser!.displayName!.trim()
                       : 'Therapist'));
       final canonicalEmail = (userProfile?.email.trim().isNotEmpty == true
@@ -115,6 +122,9 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
             photoUrl: _profile!.photoUrl,
             isActive: _profile!.isActive,
             yearsOfExperience: _profile!.yearsOfExperience,
+            certificatePdfName: _profile!.certificatePdfName,
+            certificateUrl: _profile!.certificateUrl,
+            reportSuggestions: _profile!.reportSuggestions,
           );
         }
         _years = intFrom(data['yearsOfExperience']);
@@ -122,6 +132,8 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
         _contactEmail = canonicalEmail;
         _contactPhone = canonicalPhone;
         _certificatePdfName = data['certificatePdfName']?.toString();
+        _certificateUrl = data['certificateUrl']?.toString();
+        _reportSuggestions = stringListFrom(data['reportSuggestions']);
         _packages = parsedPackages;
         _notificationPrefs = {
           ..._defaultTherapistNotificationPrefs,
@@ -169,6 +181,8 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
           initialEmail: _contactEmail,
           initialPhone: _contactPhone,
           initialCertificatePdfName: _certificatePdfName,
+          initialCertificateUrl: _certificateUrl,
+          initialReportSuggestions: _reportSuggestions,
           initialPackages: _packages,
           onSave: _saveProfileData,
         ),
@@ -187,7 +201,9 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
     required String contactEmail,
     required String contactPhone,
     required List<TherapyPackage> packages,
+    required List<String> reportSuggestions,
     String? certificatePdfName,
+    String? certificateUrl,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
@@ -218,6 +234,10 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
           : profile.availability,
       photoUrl: profile.photoUrl,
       isActive: profile.isActive,
+      yearsOfExperience: years,
+      certificatePdfName: certificatePdfName ?? profile.certificatePdfName,
+      certificateUrl: certificateUrl ?? profile.certificateUrl,
+      reportSuggestions: reportSuggestions,
     );
 
     await AppRepositories.users.upsertTherapistProfile(normalized);
@@ -251,6 +271,8 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
           'contactPhone': contactPhone,
           if (certificatePdfName != null)
             'certificatePdfName': certificatePdfName,
+          if (certificateUrl != null) 'certificateUrl': certificateUrl,
+          'reportSuggestions': reportSuggestions,
           'servicePackages': packages.map((item) => item.toMap()).toList(),
           'isActive': normalized.isActive,
           'updatedAt': FieldValue.serverTimestamp(),
@@ -268,6 +290,10 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
       if (certificatePdfName != null) {
         _certificatePdfName = certificatePdfName;
       }
+      if (certificateUrl != null) {
+        _certificateUrl = certificateUrl;
+      }
+      _reportSuggestions = reportSuggestions;
       _packages = packages;
     });
   }
@@ -289,6 +315,10 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
       availability: profile.availability,
       photoUrl: profile.photoUrl,
       isActive: isActive,
+      yearsOfExperience: profile.yearsOfExperience,
+      certificatePdfName: profile.certificatePdfName,
+      certificateUrl: profile.certificateUrl,
+      reportSuggestions: profile.reportSuggestions,
     );
     await AppRepositories.users.upsertTherapistProfile(updated);
     await FirebaseFirestore.instance
@@ -336,6 +366,8 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
                   initialEmail: _contactEmail,
                   initialPhone: _contactPhone,
                   initialCertificatePdfName: _certificatePdfName,
+                  initialCertificateUrl: _certificateUrl,
+                  initialReportSuggestions: _reportSuggestions,
                   initialPackages: _packages,
                   onSave: _saveProfileData,
                 ),
@@ -362,6 +394,9 @@ class _TherapistHomeScreenState extends State<TherapistHomeScreen> {
                 contactEmail: _contactEmail,
                 contactPhone: _contactPhone,
                 packages: updated,
+                reportSuggestions: _reportSuggestions,
+                certificatePdfName: _certificatePdfName,
+                certificateUrl: _certificateUrl,
               );
             }
           },
@@ -1215,6 +1250,8 @@ class TherapistProfileSettingsScreen extends StatefulWidget {
     required this.initialEmail,
     required this.initialPhone,
     required this.initialCertificatePdfName,
+    required this.initialCertificateUrl,
+    required this.initialReportSuggestions,
     required this.initialPackages,
     required this.onSave,
   });
@@ -1226,6 +1263,8 @@ class TherapistProfileSettingsScreen extends StatefulWidget {
   final String initialEmail;
   final String initialPhone;
   final String? initialCertificatePdfName;
+  final String? initialCertificateUrl;
+  final List<String> initialReportSuggestions;
   final List<TherapyPackage> initialPackages;
   final Future<void> Function({
     required TherapistProfile profile,
@@ -1234,7 +1273,9 @@ class TherapistProfileSettingsScreen extends StatefulWidget {
     required String contactEmail,
     required String contactPhone,
     required List<TherapyPackage> packages,
+    required List<String> reportSuggestions,
     String? certificatePdfName,
+    String? certificateUrl,
   })
   onSave;
 
@@ -1252,8 +1293,11 @@ class _TherapistProfileSettingsScreenState
   late final TextEditingController _phone;
   late final TextEditingController _years;
   late final TextEditingController _credentials;
+  late final TextEditingController _reportSuggestionsController;
   late final TextEditingController _about;
   String? _certificatePdfName;
+  String? _certificateUrl;
+  bool _uploadingCertificate = false;
   bool _saving = false;
 
   @override
@@ -1270,8 +1314,12 @@ class _TherapistProfileSettingsScreenState
       text: widget.initialYears > 0 ? widget.initialYears.toString() : '',
     );
     _credentials = TextEditingController(text: widget.initialCredentials);
+    _reportSuggestionsController = TextEditingController(
+      text: widget.initialReportSuggestions.join('\n'),
+    );
     _about = TextEditingController(text: widget.profile.bio);
     _certificatePdfName = widget.initialCertificatePdfName;
+    _certificateUrl = widget.initialCertificateUrl;
     _selected.addAll(widget.profile.specializations);
   }
 
@@ -1283,6 +1331,7 @@ class _TherapistProfileSettingsScreenState
     _phone.dispose();
     _years.dispose();
     _credentials.dispose();
+    _reportSuggestionsController.dispose();
     _about.dispose();
     super.dispose();
   }
@@ -1354,7 +1403,11 @@ class _TherapistProfileSettingsScreenState
         contactEmail: email,
         contactPhone: phone,
         packages: packages,
+        reportSuggestions: _parseReportSuggestions(
+          _reportSuggestionsController.text,
+        ),
         certificatePdfName: _certificatePdfName,
+        certificateUrl: _certificateUrl,
       );
 
       if (mounted) {
@@ -1368,22 +1421,274 @@ class _TherapistProfileSettingsScreenState
   }
 
   Future<void> _pickCertificatePdf() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      return;
+    }
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['pdf'],
-      withData: false,
+      withData: true,
+      withReadStream: true,
     );
     if (result == null || result.files.isEmpty) {
       return;
     }
-    final fileName = result.files.single.name;
-    setState(() => _certificatePdfName = fileName);
-    if (!mounted) {
+    final file = result.files.single;
+    final fileName = file.name.trim();
+    final bytes = await _resolvePickedFileBytes(file);
+    if (bytes == null || bytes.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to read PDF bytes. Please try another file.'),
+        ),
+      );
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Selected PDF: $fileName')));
+
+    await _uploadCertificateBytes(
+      uid: uid,
+      fileName: fileName,
+      bytes: bytes,
+      successMessage: 'Certificate uploaded: $fileName',
+    );
+  }
+
+  Future<Uint8List?> _resolvePickedFileBytes(PlatformFile file) async {
+    if (file.bytes != null && file.bytes!.isNotEmpty) {
+      return file.bytes!;
+    }
+    final stream = file.readStream;
+    if (stream == null) {
+      return null;
+    }
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in stream) {
+      builder.add(chunk);
+    }
+    final bytes = builder.takeBytes();
+    if (bytes.isEmpty) {
+      return null;
+    }
+    return bytes;
+  }
+
+  Future<void> _uploadCertificateBytes({
+    required String uid,
+    required String fileName,
+    required Uint8List bytes,
+    required String successMessage,
+  }) async {
+    if (bytes.isEmpty) {
+      return;
+    }
+
+    setState(() => _uploadingCertificate = true);
+    try {
+      final certificateUrl = await _uploadCertificateToStorage(
+        uid: uid,
+        fileName: fileName,
+        bytes: bytes,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _certificatePdfName = fileName;
+        _certificateUrl = certificateUrl;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(successMessage)));
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Upload failed: $error')));
+    } finally {
+      if (mounted) {
+        setState(() => _uploadingCertificate = false);
+      }
+    }
+  }
+
+  Future<String> _uploadCertificateToStorage({
+    required String uid,
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final safeName = _sanitizeFileName(fileName);
+    final objectPath = 'therapist_certificates/$uid/${timestamp}_$safeName';
+    final candidates = _storageBucketCandidates();
+    Object? lastError;
+
+    for (final bucket in candidates) {
+      try {
+        final storage = bucket == null
+            ? FirebaseStorage.instance
+            : FirebaseStorage.instanceFor(bucket: bucket);
+        final ref = storage.ref(objectPath);
+        await ref.putData(
+          bytes,
+          SettableMetadata(contentType: 'application/pdf'),
+        );
+        return _resolveDownloadUrlWithRetry(ref);
+      } catch (error) {
+        final message = error.toString();
+        final objectNotFound = message.contains('object-not-found');
+        if (objectNotFound) {
+          try {
+            final fallbackStorage = bucket == null
+                ? FirebaseStorage.instance
+                : FirebaseStorage.instanceFor(bucket: bucket);
+            final fallbackRef = fallbackStorage.ref(objectPath);
+            await _uploadViaTempFile(fallbackRef, bytes);
+            return _resolveDownloadUrlWithRetry(fallbackRef);
+          } catch (_) {
+            // Keep trying other bucket candidates.
+          }
+        }
+        lastError = error;
+      }
+    }
+
+    throw StateError(
+      'Unable to upload certificate to Firebase Storage. ${lastError ?? ''}',
+    );
+  }
+
+  Future<void> _uploadViaTempFile(Reference ref, Uint8List bytes) async {
+    final tempDir = Directory.systemTemp;
+    final tempFile = File(
+      '${tempDir.path}${Platform.pathSeparator}autiease_certificate_${DateTime.now().microsecondsSinceEpoch}.pdf',
+    );
+    await tempFile.writeAsBytes(bytes, flush: true);
+    try {
+      await ref.putFile(
+        tempFile,
+        SettableMetadata(contentType: 'application/pdf'),
+      );
+    } finally {
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+    }
+  }
+
+  Future<String> _resolveDownloadUrlWithRetry(Reference ref) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        return await ref.getDownloadURL();
+      } catch (error) {
+        lastError = error;
+        if (!error.toString().contains('object-not-found')) {
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+      }
+    }
+    throw StateError('Unable to resolve certificate download URL: $lastError');
+  }
+
+  List<String?> _storageBucketCandidates() {
+    final configuredRaw = Firebase.app().options.storageBucket;
+    final configured = (configuredRaw ?? '').trim();
+    final normalizedConfigured = configured
+        .replaceFirst(RegExp(r'^gs://'), '')
+        .replaceFirst(RegExp(r'/$'), '');
+
+    final projectId = Firebase.app().options.projectId.trim();
+    final candidates = <String?>[];
+
+    candidates.add(null); // default app storage
+    if (normalizedConfigured.isNotEmpty) {
+      candidates.add(normalizedConfigured);
+      if (normalizedConfigured.endsWith('.firebasestorage.app')) {
+        final prefix = normalizedConfigured.replaceFirst(
+          '.firebasestorage.app',
+          '',
+        );
+        candidates.add('$prefix.appspot.com');
+      } else if (normalizedConfigured.endsWith('.appspot.com')) {
+        final prefix = normalizedConfigured.replaceFirst('.appspot.com', '');
+        candidates.add('$prefix.firebasestorage.app');
+      }
+    }
+
+    if (projectId.isNotEmpty) {
+      candidates.add('$projectId.appspot.com');
+      candidates.add('$projectId.firebasestorage.app');
+    }
+
+    final seen = <String?>{};
+    final unique = <String?>[];
+    for (final item in candidates) {
+      if (item != null && item.trim().isEmpty) {
+        continue;
+      }
+      if (seen.add(item)) {
+        unique.add(item);
+      }
+    }
+    return unique;
+  }
+
+  String _sanitizeFileName(String value) {
+    final normalized = value
+        .replaceAll(RegExp(r'\s+'), '_')
+        .replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '');
+    if (normalized.isEmpty) {
+      return 'certificate.pdf';
+    }
+    return normalized.toLowerCase().endsWith('.pdf')
+        ? normalized
+        : '$normalized.pdf';
+  }
+
+  Future<void> _openCertificateUrl(String? url) async {
+    final value = (url ?? '').trim();
+    if (value.isEmpty) {
+      return;
+    }
+    final uri = Uri.tryParse(value);
+    if (uri == null) {
+      return;
+    }
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Widget _certificateUploadStatusText() {
+    if (_uploadingCertificate) {
+      return const Text(
+        'Uploading certificate...',
+        style: TextStyle(color: Color(0xFF0F766E), fontWeight: FontWeight.w500),
+      );
+    }
+    if ((_certificatePdfName ?? '').trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Text(
+      'Selected: $_certificatePdfName',
+      style: const TextStyle(
+        color: Color(0xFF334155),
+        fontWeight: FontWeight.w500,
+      ),
+    );
+  }
+
+  List<String> _parseReportSuggestions(String raw) {
+    return raw
+        .split(RegExp(r'[\r\n]+'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
   }
 
   @override
@@ -1489,22 +1794,30 @@ class _TherapistProfileSettingsScreenState
                       lines: 3,
                     ),
                     const SizedBox(height: 8),
+                    _input(
+                      'Report Suggestions (one per line)',
+                      _reportSuggestionsController,
+                      lines: 4,
+                    ),
+                    const SizedBox(height: 8),
                     _input('About You', _about, lines: 4),
                     const SizedBox(height: 10),
                     OutlinedButton.icon(
-                      onPressed: _pickCertificatePdf,
+                      onPressed: _uploadingCertificate
+                          ? null
+                          : _pickCertificatePdf,
                       icon: const Icon(Icons.upload_file_outlined),
                       label: const Text('Upload Certificate PDF'),
                     ),
-                    if (_certificatePdfName != null) ...[
+                    if (_uploadingCertificate ||
+                        _certificatePdfName != null) ...[
                       const SizedBox(height: 6),
-                      Text(
-                        'Selected: $_certificatePdfName',
-                        style: const TextStyle(
-                          color: Color(0xFF334155),
-                          fontWeight: FontWeight.w500,
+                      _certificateUploadStatusText(),
+                      if ((_certificateUrl ?? '').trim().isNotEmpty)
+                        TextButton(
+                          onPressed: () => _openCertificateUrl(_certificateUrl),
+                          child: const Text('View Uploaded Certificate'),
                         ),
-                      ),
                     ],
                     const SizedBox(height: 12),
                     if (widget.setupMode)
@@ -1740,11 +2053,21 @@ class _TherapistProfileSettingsScreenState
                             lines: 3,
                           ),
                           const SizedBox(height: 8),
+                          _input(
+                            'Report Suggestions (one per line)',
+                            _reportSuggestionsController,
+                            lines: 4,
+                          ),
+                          const SizedBox(height: 8),
                           OutlinedButton.icon(
-                            onPressed: _pickCertificatePdf,
+                            onPressed: _uploadingCertificate
+                                ? null
+                                : _pickCertificatePdf,
                             icon: const Icon(Icons.upload_file_outlined),
                             label: Text(
-                              _certificatePdfName == null
+                              _uploadingCertificate
+                                  ? 'Uploading...'
+                                  : _certificatePdfName == null
                                   ? 'Upload Certificate PDF'
                                   : 'Selected: $_certificatePdfName',
                               overflow: TextOverflow.ellipsis,
@@ -1756,6 +2079,15 @@ class _TherapistProfileSettingsScreenState
                               foregroundColor: const Color(0xFF11B5CF),
                             ),
                           ),
+                          if ((_certificateUrl ?? '').trim().isNotEmpty)
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton(
+                                onPressed: () =>
+                                    _openCertificateUrl(_certificateUrl),
+                                child: const Text('View Uploaded Certificate'),
+                              ),
+                            ),
                         ],
                       ),
                     ),

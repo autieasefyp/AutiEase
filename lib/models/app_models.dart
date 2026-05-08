@@ -735,6 +735,9 @@ class TherapistProfile {
     required this.photoUrl,
     required this.isActive,
     this.yearsOfExperience = 0,
+    this.certificatePdfName = '',
+    this.certificateUrl = '',
+    this.reportSuggestions = const <String>[],
   });
 
   final String id;
@@ -748,6 +751,9 @@ class TherapistProfile {
   final String photoUrl;
   final bool isActive;
   final int yearsOfExperience;
+  final String certificatePdfName;
+  final String certificateUrl;
+  final List<String> reportSuggestions;
 
   factory TherapistProfile.fromMap(String id, Map<String, dynamic> data) {
     final rawRating = data['rating'];
@@ -763,6 +769,9 @@ class TherapistProfile {
       photoUrl: (data['photoUrl'] ?? '').toString(),
       isActive: data['isActive'] != false,
       yearsOfExperience: intFrom(data['yearsOfExperience']),
+      certificatePdfName: (data['certificatePdfName'] ?? '').toString(),
+      certificateUrl: (data['certificateUrl'] ?? '').toString(),
+      reportSuggestions: stringListFrom(data['reportSuggestions']),
     );
   }
 }
