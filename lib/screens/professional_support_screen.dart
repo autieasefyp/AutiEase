@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../config/app_runtime_config.dart';
 import '../models/app_models.dart';
 import '../repositories/app_repositories.dart';
 import '../utils/app_colors.dart';
@@ -145,47 +147,131 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
     int index,
     bool hasBackendSubscription,
   ) {
+    if (!hasBackendSubscription) {
+      return false;
+    }
     if (_subscribedTherapistIds.contains(therapist.id)) {
       return true;
     }
-    return hasBackendSubscription &&
-        _subscribedTherapistIds.isEmpty &&
-        index == 0;
+    return _subscribedTherapistIds.isEmpty && index == 0;
   }
 
   Future<bool> _openCheckoutForTherapist(TherapistProfile therapist) async {
-    setState(() {
-      _subscribedTherapistIds.add(therapist.id);
-      _hiddenTherapistIds.remove(therapist.id);
-    });
-    await _persistTherapistState();
-    if (!mounted) {
+    try {
+      final products = await AppRepositories.billing.listProducts();
+      final activeProducts = products
+          .where((product) => product.isActive)
+          .toList();
+      if (activeProducts.isEmpty) {
+        throw StateError('No active subscription product found.');
+      }
+
+      final checkoutUrl = await AppRepositories.billing.createCheckoutSession(
+        productId: activeProducts.first.id,
+        successUrl: AppRuntimeConfig.paymentSuccessUrl,
+        cancelUrl: AppRuntimeConfig.paymentCancelUrl,
+      );
+
+      if (!mounted) return false;
+      if (checkoutUrl == null || checkoutUrl.trim().isEmpty) {
+        throw StateError('Payment checkout URL was not returned by backend.');
+      }
+
+      final uri = Uri.tryParse(checkoutUrl.trim());
+      if (uri == null) {
+        throw StateError('Invalid checkout URL from backend.');
+      }
+
+      if (uri.scheme == 'mock') {
+        setState(() {
+          _subscribedTherapistIds.add(therapist.id);
+          _hiddenTherapistIds.remove(therapist.id);
+        });
+        await _persistTherapistState();
+        if (!mounted) return true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Local dev bypass subscription activated.'),
+            backgroundColor: Color(0xFF00C853),
+          ),
+        );
+        return true;
+      }
+
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched) {
+        throw StateError('Unable to open checkout in browser.');
+      }
+
+      setState(() {
+        _hiddenTherapistIds.remove(therapist.id);
+      });
+      await _persistTherapistState();
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Secure checkout opened. After successful payment, return to app and refresh this screen.',
+          ),
+          backgroundColor: Color(0xFF00C853),
+        ),
+      );
+      return false;
+    } catch (error) {
+      if (!mounted) {
+        return false;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to start checkout: $error'),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
       return false;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Subscription activated for ${therapist.displayName}.'),
-        backgroundColor: const Color(0xFF00C853),
-      ),
-    );
-    return true;
   }
 
   Future<void> _cancelTherapistSubscription(TherapistProfile therapist) async {
-    setState(() {
-      _subscribedTherapistIds.remove(therapist.id);
-      _hiddenTherapistIds.add(therapist.id);
-    });
-    await _persistTherapistState();
-    if (!mounted) {
-      return;
+    try {
+      final subscription = await AppRepositories.billing
+          .getCurrentSubscription();
+      if (subscription != null && subscription.id.trim().isNotEmpty) {
+        await AppRepositories.billing.cancelSubscription(subscription.id);
+      }
+
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _subscribedTherapistIds.remove(therapist.id);
+        _hiddenTherapistIds.add(therapist.id);
+      });
+      await _persistTherapistState();
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Subscription cancel request submitted for ${therapist.displayName}.',
+          ),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to cancel subscription: $error'),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Subscription cancelled for ${therapist.displayName}.'),
-        backgroundColor: AppColors.errorRed,
-      ),
-    );
   }
 
   void _openExistingThread(
@@ -236,8 +322,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
       }
 
       final hasActiveBackendSubscription = subscription?.isActive == true;
-      if (!_subscribedTherapistIds.contains(therapist.id) &&
-          !hasActiveBackendSubscription) {
+      if (!hasActiveBackendSubscription) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Please subscribe to this therapist first.'),
@@ -252,7 +337,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
         childId: child.id,
         subscriptionId: (subscription != null && subscription.isActive)
             ? subscription.id
-            : 'local-bypass',
+            : '',
       );
       if (!mounted) return;
       Navigator.push(
@@ -1403,7 +1488,7 @@ class _SupportTherapistDetailsScreenState
                     const SizedBox(height: 10),
                     Text(
                       widget.paymentsEnabled
-                          ? 'Secure payment powered by Stripe. Cancel your subscription anytime from your account settings.'
+                          ? 'Secure payment powered by PayFast. Cancel your subscription anytime from your account settings.'
                           : 'Coming soon',
                       textAlign: TextAlign.center,
                       style: const TextStyle(

@@ -700,12 +700,16 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
       throw StateError('Coming soon');
     }
     final subscription = await AppRepositories.billing.getCurrentSubscription();
+    final hasActiveSubscription = subscription?.isActive == true;
+    if (!hasActiveSubscription) {
+      throw StateError(
+        'An active subscription is required to share with therapist.',
+      );
+    }
     final thread = await AppRepositories.support.ensureThread(
       therapistId: therapistId,
       childId: widget.childProfile.id,
-      subscriptionId: (subscription != null && subscription.isActive)
-          ? subscription.id
-          : 'local-bypass',
+      subscriptionId: subscription!.id,
     );
     await AppRepositories.support.sendMessage(
       threadId: thread.id,

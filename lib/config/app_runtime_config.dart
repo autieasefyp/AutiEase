@@ -1,23 +1,26 @@
 class AppRuntimeConfig {
   AppRuntimeConfig._();
 
-  static const stripeBackendBaseUrl = String.fromEnvironment(
-    'STRIPE_BACKEND_BASE_URL',
+  static const paymentBackendBaseUrl = String.fromEnvironment(
+    'PAYMENT_BACKEND_BASE_URL',
     defaultValue: '',
   );
 
-  static const stripeSuccessUrl = String.fromEnvironment(
-    'STRIPE_SUCCESS_URL',
+  static const paymentSuccessUrl = String.fromEnvironment(
+    'PAYMENT_SUCCESS_URL',
     defaultValue: 'https://autiease.app/success',
   );
 
-  static const stripeCancelUrl = String.fromEnvironment(
-    'STRIPE_CANCEL_URL',
+  static const paymentCancelUrl = String.fromEnvironment(
+    'PAYMENT_CANCEL_URL',
     defaultValue: 'https://autiease.app/cancel',
   );
 
-  static const bypassProSupportPaywall = bool.fromEnvironment(
-    'BYPASS_PRO_SUPPORT_PAYWALL',
+  static const _allowBypassForLocal = bool.fromEnvironment(
+    'ALLOW_PRO_SUPPORT_PAYWALL_BYPASS',
     defaultValue: false,
   );
+  static const _isProduct = bool.fromEnvironment('dart.vm.product');
+  static bool get bypassProSupportPaywall =>
+      !_isProduct && _allowBypassForLocal;
 }

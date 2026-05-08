@@ -30,14 +30,14 @@ Current migration target is already selected:
 9. Install Firebase resources:
    - `firebase use autiease-fyp-2026`
    - `firebase deploy --only firestore:rules`
-10. For Functions, set required Stripe secrets before deploy:
-   - `firebase functions:secrets:set STRIPE_SECRET_KEY`
-   - `firebase functions:secrets:set STRIPE_WEBHOOK_SECRET`
+10. For Functions, set required payment provider secrets before deploy:
+   - `firebase functions:secrets:set PAYMENT_PROVIDER_SECRET_KEY`
+   - `firebase functions:secrets:set PAYMENT_PROVIDER_WEBHOOK_SECRET`
 11. Deploy functions:
    - `firebase deploy --only functions`
 
 If you are on Spark (no Blaze), skip Functions for payments and use the external backend in:
-- `docs/stripe_external_backend.md`
+- `docs/payfast_payment_backend.md`
 
 ## Seed data
 

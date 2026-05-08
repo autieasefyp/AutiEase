@@ -9,7 +9,7 @@ This runbook is the release checklist for Phase 2 hardening.
   - Firestore `users/{uid}` deletion cascades to Auth + dependent data.
   - Firebase Auth user deletion cascades to Firestore `users/{uid}` + dependent data.
 - Local admin cleanup script added for stale test accounts.
-- Billing path migrated to external Stripe backend (Spark-compatible; no Firebase Functions required for payments).
+- Billing path migrated to external payment backend (GoPayFast + Spark-compatible Firebase setup).
 
 ## Deploy Commands (Core App)
 Run from repo root:
@@ -20,11 +20,11 @@ Run from repo root:
 `firebase deploy --only firestore:rules`
 
 ## Payments Backend Deploy
-- Use `stripe-backend/` service and deploy to Render/Railway/Fly.
-- Full guide: `docs/stripe_external_backend.md`
+- Use `payment-backend/` service and deploy to Render/Railway/Fly.
+- Full guide: `docs/payfast_payment_backend.md`
 - Run Flutter with:
-`--dart-define=STRIPE_BACKEND_BASE_URL=...`
-- For no-Stripe-country local testing, run backend with `MOCK_PAYMENTS=true`.
+`--dart-define=PAYMENT_BACKEND_BASE_URL=...`
+- For local demo testing without live gateway, run backend with `PAYMENTS_MOCK_MODE=true`.
 
 ## Regression Commands
 Run from repo root:

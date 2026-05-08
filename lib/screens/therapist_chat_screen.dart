@@ -341,19 +341,18 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
 
     try {
       final subscriptionId = widget.thread.subscriptionId.trim();
-      final canCallStripeBackend =
-          AppRepositories.stripeBackend.isConfigured &&
-          subscriptionId.isNotEmpty &&
-          subscriptionId != 'local-bypass';
+      final canCallPaymentBackend =
+          AppRepositories.paymentBackend.isConfigured &&
+          subscriptionId.isNotEmpty;
 
-      if (canCallStripeBackend) {
+      if (canCallPaymentBackend) {
         try {
           await AppRepositories.billing.cancelSubscription(subscriptionId);
         } catch (error) {
           final message = error.toString();
           final backendNotConfigured =
-              message.contains('Stripe backend is not configured') ||
-              message.contains('STRIPE_BACKEND_BASE_URL');
+              message.contains('Payment backend is not configured') ||
+              message.contains('PAYMENT_BACKEND_BASE_URL');
           if (!backendNotConfigured) {
             rethrow;
           }

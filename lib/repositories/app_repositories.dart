@@ -5,7 +5,7 @@ import '../config/app_runtime_config.dart';
 import '../models/app_models.dart';
 import '../services/auth_verification_policy.dart';
 import '../services/dashboard_metrics_calculator.dart';
-import '../services/stripe_backend_client.dart';
+import '../services/payment_backend_client.dart';
 
 class FirestoreCollections {
   static const users = 'users';
@@ -131,7 +131,7 @@ class AppRepositories {
 
   static final FirebaseFirestore firestore = FirebaseFirestore.instance;
   static final FirebaseAuth authClient = FirebaseAuth.instance;
-  static final StripeBackendClient stripeBackend = StripeBackendClient(
+  static final PaymentBackendClient paymentBackend = PaymentBackendClient(
     authClient,
   );
 
@@ -152,7 +152,7 @@ class AppRepositories {
   static final BillingRepository billing = FirebaseBillingRepository(
     authClient,
     firestore,
-    stripeBackend,
+    paymentBackend,
   );
 }
 
@@ -1006,19 +1006,29 @@ class FirebaseSupportRepository implements SupportRepository {
       final needsMetadataPatch =
           existingThread.parentDisplayName.isEmpty ||
           existingThread.therapistDisplayName.isEmpty;
-      if (needsMetadataPatch) {
+      final normalizedSubscriptionId = subscriptionId.trim();
+      final needsReadOnlyPatch =
+          normalizedSubscriptionId.isEmpty && existingThread.status == 'active';
+      if (needsMetadataPatch || needsReadOnlyPatch) {
         await existing.docs.first.reference.set({
           'parentDisplayName': parentDisplayName,
           'therapistDisplayName': therapistDisplayName,
+          if (needsReadOnlyPatch) ...{
+            'status': 'canceled',
+            'postCancelVisible': true,
+          },
         }, SetOptions(merge: true));
         return existingThread.copyWith(
           parentDisplayName: parentDisplayName,
           therapistDisplayName: therapistDisplayName,
+          status: needsReadOnlyPatch ? 'canceled' : null,
+          postCancelVisible: needsReadOnlyPatch ? true : null,
         );
       }
       return existingThread;
     }
 
+    final normalizedSubscriptionId = subscriptionId.trim();
     final ref = _firestore
         .collection(FirestoreCollections.therapistThreads)
         .doc();
@@ -1027,8 +1037,8 @@ class FirebaseSupportRepository implements SupportRepository {
       parentId: parentId,
       therapistId: therapistId,
       childId: childId,
-      subscriptionId: subscriptionId,
-      status: 'active',
+      subscriptionId: normalizedSubscriptionId,
+      status: normalizedSubscriptionId.isNotEmpty ? 'active' : 'canceled',
       parentDisplayName: parentDisplayName,
       therapistDisplayName: therapistDisplayName,
       lastMessageAt: DateTime.now(),
@@ -1068,6 +1078,21 @@ class FirebaseSupportRepository implements SupportRepository {
     if (senderId == null) {
       throw StateError('No logged in user');
     }
+    if (senderRole == 'parent') {
+      final threadSnapshot = await _firestore
+          .collection(FirestoreCollections.therapistThreads)
+          .doc(threadId)
+          .get();
+      final threadData = threadSnapshot.data() ?? const <String, dynamic>{};
+      final status = (threadData['status'] ?? 'active').toString();
+      final postCancelVisible = threadData['postCancelVisible'] != false;
+      if (status != 'active' || !postCancelVisible) {
+        throw StateError(
+          'Messaging is disabled until an active subscription is restored.',
+        );
+      }
+    }
+
     await _firestore
         .collection(FirestoreCollections.therapistThreads)
         .doc(threadId)
@@ -1158,21 +1183,32 @@ class FirebaseSupportRepository implements SupportRepository {
 }
 
 class FirebaseBillingRepository implements BillingRepository {
-  FirebaseBillingRepository(this._auth, this._firestore, this._stripeBackend);
+  FirebaseBillingRepository(this._auth, this._firestore, this._paymentBackend);
 
   final FirebaseAuth _auth;
   final FirebaseFirestore _firestore;
-  final StripeBackendClient _stripeBackend;
+  final PaymentBackendClient _paymentBackend;
 
   UserSubscription _localBypassSubscription(String userId) {
     return UserSubscription(
-      id: 'local-bypass',
+      id: 'dev-bypass',
       userId: userId,
       productId: 'bypass-plan',
       status: 'active',
       cancelAtPeriodEnd: false,
       currentPeriodEnd: DateTime.now().add(const Duration(days: 3650)),
     );
+  }
+
+  bool _isCurrentlyActive(UserSubscription subscription) {
+    if (!subscription.isActive) {
+      return false;
+    }
+    final periodEnd = subscription.currentPeriodEnd;
+    if (periodEnd == null) {
+      return true;
+    }
+    return periodEnd.isAfter(DateTime.now());
   }
 
   @override
@@ -1202,10 +1238,13 @@ class FirebaseBillingRepository implements BillingRepository {
         .limit(1)
         .get();
     if (activeSnapshot.docs.isNotEmpty) {
-      return UserSubscription.fromMap(
+      final subscription = UserSubscription.fromMap(
         activeSnapshot.docs.first.id,
         activeSnapshot.docs.first.data(),
       );
+      if (_isCurrentlyActive(subscription)) {
+        return subscription;
+      }
     }
 
     final fallbackSnapshot = await _firestore
@@ -1229,9 +1268,9 @@ class FirebaseBillingRepository implements BillingRepository {
     required String cancelUrl,
   }) async {
     if (AppRuntimeConfig.bypassProSupportPaywall) {
-      return 'mock://local-bypass';
+      return 'mock://dev-bypass';
     }
-    return _stripeBackend.createCheckoutSession(
+    return _paymentBackend.createCheckoutSession(
       productId: productId,
       successUrl: successUrl,
       cancelUrl: cancelUrl,
@@ -1243,7 +1282,7 @@ class FirebaseBillingRepository implements BillingRepository {
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return;
     }
-    await _stripeBackend.cancelSubscription(subscriptionId);
+    await _paymentBackend.cancelSubscription(subscriptionId);
     await _firestore
         .collection(FirestoreCollections.subscriptions)
         .doc(subscriptionId)
@@ -1258,7 +1297,7 @@ class FirebaseBillingRepository implements BillingRepository {
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return;
     }
-    await _stripeBackend.reactivateSubscription(subscriptionId);
+    await _paymentBackend.reactivateSubscription(subscriptionId);
     await _firestore
         .collection(FirestoreCollections.subscriptions)
         .doc(subscriptionId)

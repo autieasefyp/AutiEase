@@ -108,9 +108,9 @@ async function cleanupUserBackendsByUid(
 }
 
 function getStripe() {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
+  const secretKey = process.env.PAYMENT_PROVIDER_SECRET_KEY;
   if (!secretKey) {
-    throw new Error('Missing STRIPE_SECRET_KEY');
+    throw new Error('Missing PAYMENT_PROVIDER_SECRET_KEY');
   }
   return stripe(secretKey);
 }
@@ -248,7 +248,7 @@ exports.stripeWebhook = onRequest(async (req, res) => {
   try {
     const stripeClient = getStripe();
     const signature = req.headers['stripe-signature'];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const webhookSecret = process.env.PAYMENT_PROVIDER_WEBHOOK_SECRET;
     const event = stripeClient.webhooks.constructEvent(
       req.rawBody,
       signature,

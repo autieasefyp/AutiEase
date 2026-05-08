@@ -921,7 +921,8 @@ class SubscriptionProduct {
     required this.subtitle,
     required this.featureList,
     required this.priceLabel,
-    required this.stripePriceId,
+    required this.billingPlanId,
+    required this.amount,
     required this.isActive,
   });
 
@@ -930,17 +931,22 @@ class SubscriptionProduct {
   final String subtitle;
   final List<String> featureList;
   final String priceLabel;
-  final String stripePriceId;
+  final String billingPlanId;
+  final double amount;
   final bool isActive;
 
   factory SubscriptionProduct.fromMap(String id, Map<String, dynamic> data) {
+    final rawAmount = data['amount'];
     return SubscriptionProduct(
       id: id,
       title: (data['title'] ?? '').toString(),
       subtitle: (data['subtitle'] ?? '').toString(),
       featureList: stringListFrom(data['featureList']),
       priceLabel: (data['priceLabel'] ?? '').toString(),
-      stripePriceId: (data['stripePriceId'] ?? '').toString(),
+      billingPlanId: (data['billingPlanId'] ?? '').toString(),
+      amount: rawAmount is num
+          ? rawAmount.toDouble()
+          : double.tryParse(rawAmount?.toString() ?? '') ?? 0,
       isActive: data['isActive'] != false,
     );
   }
@@ -954,6 +960,10 @@ class UserSubscription {
     required this.status,
     required this.cancelAtPeriodEnd,
     this.currentPeriodEnd,
+    this.provider = '',
+    this.providerTransactionId = '',
+    this.providerCustomerRef = '',
+    this.lastPaymentRef = '',
   });
 
   final String id;
@@ -962,6 +972,10 @@ class UserSubscription {
   final String status;
   final bool cancelAtPeriodEnd;
   final DateTime? currentPeriodEnd;
+  final String provider;
+  final String providerTransactionId;
+  final String providerCustomerRef;
+  final String lastPaymentRef;
 
   bool get isActive => status == 'active' || status == 'trialing';
 
@@ -973,6 +987,10 @@ class UserSubscription {
       status: (data['status'] ?? 'inactive').toString(),
       cancelAtPeriodEnd: data['cancelAtPeriodEnd'] == true,
       currentPeriodEnd: dateTimeFromFirestore(data['currentPeriodEnd']),
+      provider: (data['provider'] ?? '').toString(),
+      providerTransactionId: (data['providerTransactionId'] ?? '').toString(),
+      providerCustomerRef: (data['providerCustomerRef'] ?? '').toString(),
+      lastPaymentRef: (data['lastPaymentRef'] ?? '').toString(),
     );
   }
 }

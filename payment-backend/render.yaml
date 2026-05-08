@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: autiease-payment-backend
+    runtime: node
+    rootDir: payment-backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PAYMENT_PROVIDER
+        value: payfast_pk
+      - key: FIREBASE_PROJECT_ID
+        value: autiease-fyp-2026
+      - key: PAYFAST_BASE_URL
+        value: https://ipguat.apps.net.pk/Ecommerce/api/Transaction
+      - key: PAYFAST_MERCHANT_ID
+        sync: false
+      - key: PAYFAST_SECURED_KEY
+        sync: false
+      - key: PAYFAST_MERCHANT_NAME
+        value: AutiEase
+      - key: PAYFAST_CURRENCY_CODE
+        value: PKR
+      - key: PAYMENT_REDIRECT_BASE_URL
+        sync: false
+      - key: PAYFAST_CHECKOUT_URL_FIELD
+        sync: false
+      - key: PAYFAST_STRICT_WEBHOOK_VERIFICATION
+        value: true
+      - key: RECONCILE_CRON_SECRET
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
