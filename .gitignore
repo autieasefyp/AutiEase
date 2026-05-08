@@ -58,6 +58,5 @@ service-account*.json
 # Local/generated folders for this repo
 .tmp/
 functions/node_modules/
-stripe-backend/node_modules/
 android/app/google-services*.json
 ios/Runner/GoogleService-Info*.plist

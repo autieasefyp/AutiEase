@@ -8,6 +8,7 @@
   "scripts": {
     "seed": "node scripts/seed-firestore.js",
     "cleanup:user": "node scripts/cleanup-user.js",
+    "billing:invalidate-legacy": "node scripts/invalidate-legacy-subscriptions.js",
     "seed:dashboard": "node scripts/seed-dashboard-test-data.js",
     "clear:activity": "node scripts/clear-activity-data.js",
     "clear:activity:daily": "node scripts/clear-activity-data.js --scope daily",
@@ -16,7 +17,6 @@
   },
   "dependencies": {
     "firebase-admin": "^13.0.2",
-    "firebase-functions": "^6.0.1",
-    "stripe": "^17.6.0"
+    "firebase-functions": "^6.0.1"
   }
 }

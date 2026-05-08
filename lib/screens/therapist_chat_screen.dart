@@ -351,7 +351,7 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Opened Google Play subscription settings.'),
+          content: Text('Subscription cancellation requested.'),
           backgroundColor: Colors.green,
         ),
       );

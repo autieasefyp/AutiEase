@@ -738,7 +738,7 @@ class TherapistProfile {
     this.certificatePdfName = '',
     this.certificateUrl = '',
     this.reportSuggestions = const <String>[],
-    this.playProductId = '',
+    this.subscriptionProductId = '',
   });
 
   final String id;
@@ -755,7 +755,7 @@ class TherapistProfile {
   final String certificatePdfName;
   final String certificateUrl;
   final List<String> reportSuggestions;
-  final String playProductId;
+  final String subscriptionProductId;
 
   factory TherapistProfile.fromMap(String id, Map<String, dynamic> data) {
     final rawRating = data['rating'];
@@ -774,7 +774,7 @@ class TherapistProfile {
       certificatePdfName: (data['certificatePdfName'] ?? '').toString(),
       certificateUrl: (data['certificateUrl'] ?? '').toString(),
       reportSuggestions: stringListFrom(data['reportSuggestions']),
-      playProductId: (data['playProductId'] ?? '').toString(),
+      subscriptionProductId: (data['subscriptionProductId'] ?? '').toString(),
     );
   }
 }

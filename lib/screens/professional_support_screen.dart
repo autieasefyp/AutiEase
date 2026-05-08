@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_models.dart';
@@ -52,8 +51,6 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
   final Set<String> _hiddenTherapistIds = _sessionHiddenTherapistIds;
   bool _showFindTherapist = false;
   bool _stateLoaded = false;
-  bool get _isAndroidBilling =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   void _showComingSoon() {
     if (!mounted) {
@@ -172,11 +169,6 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
 
   Future<bool> _openCheckoutForTherapist(TherapistProfile therapist) async {
     try {
-      if (!_isAndroidBilling) {
-        throw StateError(
-          'Subscriptions are currently available on Android devices only.',
-        );
-      }
       final subscribed = await AppRepositories.billing
           .purchaseTherapistSubscription(therapist.id);
       await _syncSubscribedTherapistsFromBackend();
@@ -191,8 +183,8 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
         SnackBar(
           content: Text(
             subscribed
-                ? 'Google Play subscription activated.'
-                : 'Purchase flow finished. Pull to refresh or tap Restore Purchases if access is not updated yet.',
+                ? 'Subscription activated.'
+                : 'Checkout started. Complete payment, then tap Refresh Status if access is not updated yet.',
           ),
           backgroundColor: subscribed
               ? const Color(0xFF00C853)
@@ -216,12 +208,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
 
   Future<void> _restorePurchases() async {
     try {
-      if (!_isAndroidBilling) {
-        throw StateError(
-          'Restore is available on Android devices only for this release.',
-        );
-      }
-      await AppRepositories.billing.restorePurchases();
+      await AppRepositories.billing.syncSubscriptions();
       await _syncSubscribedTherapistsFromBackend();
       if (!mounted) {
         return;
@@ -229,7 +216,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
       setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Google Play purchases restored.'),
+          content: Text('Subscription status refreshed.'),
           backgroundColor: Color(0xFF00C853),
         ),
       );
@@ -248,11 +235,6 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
 
   Future<void> _cancelTherapistSubscription(TherapistProfile therapist) async {
     try {
-      if (!_isAndroidBilling) {
-        throw StateError(
-          'Subscription management is currently available on Android devices only.',
-        );
-      }
       await AppRepositories.billing.cancelSubscriptionInStore(therapist.id);
 
       if (!mounted) {
@@ -268,7 +250,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Opened Google Play subscription management for ${therapist.displayName}.',
+            'Cancellation requested for ${therapist.displayName}.',
           ),
           backgroundColor: AppColors.errorRed,
         ),
@@ -384,7 +366,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
           therapist: therapist,
           initiallySubscribed: isSubscribed,
           chatEnabled: featureFlags.chatEnabled,
-          paymentsEnabled: featureFlags.paymentsEnabled && _isAndroidBilling,
+          paymentsEnabled: featureFlags.paymentsEnabled,
           onSubscribe: () => _openCheckoutForTherapist(therapist),
           onCancelSubscription: () => _cancelTherapistSubscription(therapist),
           onOpenMessages: () => _openTherapistChat(
@@ -508,9 +490,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
             children: [
               Expanded(
                 child: Text(
-                  _isAndroidBilling
-                      ? 'Subscriptions are handled securely with Google Play Billing.'
-                      : 'Subscriptions are currently available on Android.',
+                  'Subscriptions are handled securely with GoPayFast checkout.',
                   style: const TextStyle(
                     fontSize: 12,
                     color: Color(0xFF6B7280),
@@ -519,7 +499,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
               ),
               TextButton(
                 onPressed: _restorePurchases,
-                child: const Text('Restore Purchases'),
+                child: const Text('Refresh Status'),
               ),
             ],
           ),
@@ -1677,8 +1657,8 @@ class _SupportTherapistDetailsScreenState
                     const SizedBox(height: 10),
                     Text(
                       widget.paymentsEnabled
-                          ? 'Secure payment powered by Google Play Billing. Manage or cancel anytime from your Play subscription settings.'
-                          : 'Subscriptions are currently available on Android.',
+                          ? 'Secure payment powered by GoPayFast. You can manage your subscription from this app.'
+                          : 'Subscriptions are currently unavailable.',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 11,

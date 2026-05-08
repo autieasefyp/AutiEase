@@ -161,6 +161,10 @@ function buildBasketId(uid, productId) {
   return `ae_${uid.slice(0, 8)}_${safeProductId}_${timestamp}`;
 }
 
+function normalizeSubscriptionDocId(userId, therapistId) {
+  return `${normalizeValue(userId)}_${normalizeValue(therapistId)}`;
+}
+
 function isSuccessStatus(statusValue, responseCodeValue) {
   const status = normalizeValue(statusValue).toLowerCase();
   const responseCode = normalizeValue(responseCodeValue).toLowerCase();
@@ -346,7 +350,15 @@ function addDays(date, days) {
   return result;
 }
 
-async function setUserSubscriptionEntitlements(userId, active) {
+async function syncUserSubscriptionEntitlements(userId) {
+  const activeSnapshot = await db
+    .collection('subscriptions')
+    .where('userId', '==', userId)
+    .where('status', 'in', ['active', 'trialing'])
+    .limit(1)
+    .get();
+  const active = !activeSnapshot.empty;
+
   await db.collection('users').doc(userId).set(
     {
       entitlements: {
@@ -358,10 +370,18 @@ async function setUserSubscriptionEntitlements(userId, active) {
     },
     { merge: true },
   );
+}
 
+async function updateTherapistThreadAccess(userId, therapistId, active) {
+  const normalizedUserId = normalizeValue(userId);
+  const normalizedTherapistId = normalizeValue(therapistId);
+  if (!normalizedUserId || !normalizedTherapistId) {
+    return;
+  }
   const threadSnapshot = await db
     .collection('therapist_threads')
-    .where('parentId', '==', userId)
+    .where('parentId', '==', normalizedUserId)
+    .where('therapistId', '==', normalizedTherapistId)
     .get();
 
   if (threadSnapshot.empty) {
@@ -480,11 +500,13 @@ async function reconcileExpiredSubscriptions() {
   }
 
   const updatedUserIds = new Set();
+  const updatedPairs = [];
   const batch = db.batch();
 
   for (const doc of snapshot.docs) {
     const data = doc.data() || {};
     const userId = normalizeValue(data.userId);
+    const therapistId = normalizeValue(data.therapistId);
     if (!userId) {
       continue;
     }
@@ -492,26 +514,25 @@ async function reconcileExpiredSubscriptions() {
       doc.ref,
       {
         status: 'expired',
+        isActive: false,
         cancelAtPeriodEnd: true,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true },
     );
     updatedUserIds.add(userId);
+    if (therapistId) {
+      updatedPairs.push({ userId, therapistId });
+    }
   }
 
   await batch.commit();
 
+  for (const pair of updatedPairs) {
+    await updateTherapistThreadAccess(pair.userId, pair.therapistId, false);
+  }
   for (const userId of updatedUserIds) {
-    const activeSnapshot = await db
-      .collection('subscriptions')
-      .where('userId', '==', userId)
-      .where('status', 'in', ['active', 'trialing'])
-      .limit(1)
-      .get();
-    if (activeSnapshot.empty) {
-      await setUserSubscriptionEntitlements(userId, false);
-    }
+    await syncUserSubscriptionEntitlements(userId);
   }
 
   return { expiredCount: snapshot.size };
@@ -568,13 +589,31 @@ app.get('/api/v1/checkout/redirect/:checkoutId', async (req, res) => {
 app.post('/api/v1/checkout/session', requireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
-    const { productId, successUrl, cancelUrl } = req.body || {};
+    const { therapistId, productId, successUrl, cancelUrl } = req.body || {};
 
-    if (!productId || !successUrl || !cancelUrl) {
+    if (!therapistId || !productId || !successUrl || !cancelUrl) {
       return jsonError(res, 400, 'Missing checkout parameters');
     }
+    const normalizedTherapistId = normalizeValue(therapistId);
+    const normalizedProductId = normalizeValue(productId);
+    if (!normalizedTherapistId || !normalizedProductId) {
+      return jsonError(res, 400, 'Invalid checkout parameters');
+    }
 
-    const productSnapshot = await db.collection('subscription_products').doc(productId).get();
+    const therapistSnapshot = await db.collection('therapist_profiles').doc(normalizedTherapistId).get();
+    if (!therapistSnapshot.exists) {
+      return jsonError(res, 404, 'Therapist profile not found');
+    }
+    const therapist = therapistSnapshot.data() || {};
+    const therapistProductId = normalizeValue(therapist.subscriptionProductId);
+    if (!therapistProductId) {
+      return jsonError(res, 400, 'Therapist is not configured with a subscription product');
+    }
+    if (therapistProductId !== normalizedProductId) {
+      return jsonError(res, 400, 'Therapist and product mapping mismatch');
+    }
+
+    const productSnapshot = await db.collection('subscription_products').doc(normalizedProductId).get();
     if (!productSnapshot.exists) {
       return jsonError(res, 404, 'Subscription product not found');
     }
@@ -598,22 +637,24 @@ app.post('/api/v1/checkout/session', requireAuth, async (req, res) => {
       );
     }
 
-    const basketId = buildBasketId(uid, productId);
+    const basketId = buildBasketId(uid, normalizedProductId);
     const checkoutId = basketId;
+    const subscriptionId = normalizeSubscriptionDocId(uid, normalizedTherapistId);
     const transactionAmount = toAmountString(amount);
 
     if (mockPaymentsEnabled) {
-      const subscriptionId = `mock_${uid}`;
       await db.collection('subscriptions').doc(subscriptionId).set(
         {
           userId: uid,
-          productId,
+          therapistId: normalizedTherapistId,
+          productId: normalizedProductId,
           provider: 'payfast_pk',
           providerTransactionId: `mock_txn_${Date.now()}`,
           providerCustomerRef: normalizeValue(user.email),
           lastPaymentRef: `mock_ref_${Date.now()}`,
           basketId,
           status: 'active',
+          isActive: true,
           cancelAtPeriodEnd: false,
           currentPeriodEnd: admin.firestore.Timestamp.fromDate(addDays(new Date(), 30)),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -622,10 +663,11 @@ app.post('/api/v1/checkout/session', requireAuth, async (req, res) => {
         },
         { merge: true },
       );
-      await setUserSubscriptionEntitlements(uid, true);
+      await updateTherapistThreadAccess(uid, normalizedTherapistId, true);
+      await syncUserSubscriptionEntitlements(uid);
 
       return res.status(200).json({
-        sessionId: checkoutId,
+        sessionId: subscriptionId,
         url: `${resolveCheckoutBaseUrl(req)}/api/v1/payment/return/success?mock=1&basket_id=${encodeURIComponent(
           basketId,
         )}`,
@@ -664,7 +706,9 @@ app.post('/api/v1/checkout/session', requireAuth, async (req, res) => {
     await db.collection('checkout_sessions').doc(checkoutId).set(
       {
         userId: uid,
-        productId,
+        therapistId: normalizedTherapistId,
+        productId: normalizedProductId,
+        subscriptionId,
         basketId,
         amount,
         status: 'pending',
@@ -678,14 +722,17 @@ app.post('/api/v1/checkout/session', requireAuth, async (req, res) => {
       { merge: true },
     );
 
-    await db.collection('subscriptions').doc(checkoutId).set(
+    await db.collection('subscriptions').doc(subscriptionId).set(
       {
         userId: uid,
-        productId,
+        therapistId: normalizedTherapistId,
+        productId: normalizedProductId,
         provider: 'payfast_pk',
         status: 'pending',
+        isActive: false,
         cancelAtPeriodEnd: false,
         basketId,
+        amount,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       },
@@ -693,7 +740,7 @@ app.post('/api/v1/checkout/session', requireAuth, async (req, res) => {
     );
 
     return res.status(200).json({
-      sessionId: checkoutId,
+      sessionId: subscriptionId,
       url: `${baseUrl}/api/v1/checkout/redirect/${encodeURIComponent(checkoutId)}`,
     });
   } catch (error) {
@@ -721,6 +768,8 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
       return jsonError(res, 404, 'Subscription not found for basket');
     }
     const subscription = subscriptionDoc.data() || {};
+    const subscriptionUserId = normalizeValue(subscription.userId);
+    const therapistId = normalizeValue(subscription.therapistId);
 
     const amount = parseAmount(subscription.amount);
     const verification = await verifyTransactionWithGateway(normalized, amount);
@@ -734,6 +783,7 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
           providerTransactionId: normalized.transactionId,
           lastPaymentRef: normalized.transactionId || normalized.basketId,
           status: 'active',
+          isActive: true,
           cancelAtPeriodEnd: false,
           currentPeriodEnd: admin.firestore.Timestamp.fromDate(addDays(new Date(), 30)),
           verification: {
@@ -747,14 +797,26 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
         { merge: true },
       );
 
-      await setUserSubscriptionEntitlements(normalizeValue(subscription.userId), true);
-      await db.collection('checkout_sessions').doc(subscriptionDoc.id).set(
-        {
-          status: 'completed',
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
+      if (subscriptionUserId && therapistId) {
+        await updateTherapistThreadAccess(subscriptionUserId, therapistId, true);
+      }
+      if (subscriptionUserId) {
+        await syncUserSubscriptionEntitlements(subscriptionUserId);
+      }
+      const checkoutSessionSnapshot = await db
+        .collection('checkout_sessions')
+        .where('basketId', '==', normalized.basketId)
+        .limit(1)
+        .get();
+      if (!checkoutSessionSnapshot.empty) {
+        await checkoutSessionSnapshot.docs[0].ref.set(
+          {
+            status: 'completed',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
 
       return res.status(200).json({ received: true, status: 'active' });
     }
@@ -762,6 +824,7 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
     await subscriptionDoc.ref.set(
       {
         status: 'payment_failed',
+        isActive: false,
         cancelAtPeriodEnd: true,
         verification: {
           verifiedByGateway: verification.verified,
@@ -774,6 +837,12 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
       },
       { merge: true },
     );
+    if (subscriptionUserId && therapistId) {
+      await updateTherapistThreadAccess(subscriptionUserId, therapistId, false);
+    }
+    if (subscriptionUserId) {
+      await syncUserSubscriptionEntitlements(subscriptionUserId);
+    }
 
     return res.status(200).json({ received: true, status: 'failed' });
   } catch (error) {
@@ -823,12 +892,14 @@ app.post('/api/v1/subscription/cancel', requireAuth, async (req, res) => {
       await subscriptionRef.set(
         {
           status: 'canceled',
+          isActive: false,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true },
       );
-      await setUserSubscriptionEntitlements(uid, false);
+      await updateTherapistThreadAccess(uid, normalizeValue(subscription.therapistId), false);
     }
+    await syncUserSubscriptionEntitlements(uid);
 
     return res.status(200).json({ status: shouldDeactivateNow ? 'canceled' : 'cancel_scheduled' });
   } catch (error) {
@@ -863,14 +934,13 @@ app.post('/api/v1/subscription/reactivate', requireAuth, async (req, res) => {
       {
         cancelAtPeriodEnd: false,
         status: periodStillActive ? 'active' : 'expired',
+        isActive: periodStillActive,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true },
     );
-
-    if (periodStillActive) {
-      await setUserSubscriptionEntitlements(uid, true);
-    }
+    await updateTherapistThreadAccess(uid, normalizeValue(subscription.therapistId), periodStillActive);
+    await syncUserSubscriptionEntitlements(uid);
 
     return res.status(200).json({ status: periodStillActive ? 'reactivated' : 'expired_needs_renewal' });
   } catch (error) {

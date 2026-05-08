@@ -78,6 +78,7 @@ class PaymentBackendClient {
   }
 
   Future<String?> createCheckoutSession({
+    required String therapistId,
     required String productId,
     required String successUrl,
     required String cancelUrl,
@@ -85,6 +86,7 @@ class PaymentBackendClient {
     final payload = await _postJson(
       '/api/v1/checkout/session',
       body: {
+        'therapistId': therapistId,
         'productId': productId,
         'successUrl': successUrl,
         'cancelUrl': cancelUrl,

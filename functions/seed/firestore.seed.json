@@ -698,8 +698,8 @@
       "displayName": "Dr. Michael Chen",
       "bio": "Speech and communication specialist focused on AAC-supported routines and parent coaching.",
       "specializations": ["Speech Therapy", "AAC", "Parent Coaching"],
-      "pricing": "$49 / month support access",
-      "playProductId": "therapist_demo_1_monthly",
+      "pricing": "PKR 8,000 / month support access",
+      "subscriptionProductId": "professional-support-monthly",
       "languages": ["English"],
       "rating": 4.9,
       "availability": "Weekdays 9 AM - 5 PM",
@@ -711,8 +711,8 @@
       "displayName": "Sana Ahmed, OT",
       "bio": "Occupational therapist supporting routines, transitions, and sensory-friendly activity planning.",
       "specializations": ["Occupational Therapy", "Routines", "Sensory Support"],
-      "pricing": "$59 / month support access",
-      "playProductId": "therapist_demo_2_monthly",
+      "pricing": "PKR 8,000 / month support access",
+      "subscriptionProductId": "professional-support-monthly",
       "languages": ["English", "Urdu"],
       "rating": 4.8,
       "availability": "Mon, Wed, Fri",
@@ -730,8 +730,8 @@
         "Keep support threads in-app",
         "Access support-oriented guidance"
       ],
-      "priceLabel": "$29/month",
-      "amount": 29,
+      "priceLabel": "PKR 8,000/month",
+      "amount": 8000,
       "billingPlanId": "payfast_professional_support_monthly",
       "isActive": true
     }

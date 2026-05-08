@@ -30,14 +30,15 @@ Current migration target is already selected:
 9. Install Firebase resources:
    - `firebase use autiease-fyp-2026`
    - `firebase deploy --only firestore:rules`
-10. For Functions, set required payment provider secrets before deploy:
-   - `firebase functions:secrets:set PAYMENT_PROVIDER_SECRET_KEY`
-   - `firebase functions:secrets:set PAYMENT_PROVIDER_WEBHOOK_SECRET`
-11. Deploy functions:
+10. Deploy functions:
    - `firebase deploy --only functions`
 
 If you are on Spark (no Blaze), skip Functions for payments and use the external backend in:
 - `docs/payfast_payment_backend.md`
+
+Payment note:
+- Legacy payment-provider secrets are no longer used in Firebase Functions.
+- Billing is handled by `payment-backend` (GoPayFast).
 
 ## Seed data
 

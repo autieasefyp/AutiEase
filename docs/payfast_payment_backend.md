@@ -7,6 +7,7 @@ This is the active billing integration for AutiEase FYP delivery.
 - Handles payment callbacks via `POST /api/v1/payment/webhook`.
 - Activates/deactivates Firestore subscription entitlements.
 - Supports monthly-renew lifecycle (`cancelAtPeriodEnd`, expiry reconciliation).
+- Uses deterministic subscription ids: `subscriptions/{userId}_{therapistId}`.
 
 ## Backend setup
 From `payment-backend/`:
@@ -49,7 +50,17 @@ $env:PAYMENTS_MOCK_MODE="true"
 
 In demo mode, backend simulates a successful monthly subscription.
 
+## Checkout API contract
+- `POST /api/v1/checkout/session` expects:
+  - `therapistId`
+  - `productId`
+  - `successUrl`
+  - `cancelUrl`
+- Backend rejects checkout if therapist-to-product mapping does not match.
+
 ## Firestore expectations
+- `therapist_profiles/{therapistId}` should include:
+  - `subscriptionProductId` (string; must match a `subscription_products/{id}`)
 - `subscription_products/{id}` should include:
   - `amount` (numeric)
   - `billingPlanId` (string; metadata)

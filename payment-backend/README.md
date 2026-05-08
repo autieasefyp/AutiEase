@@ -11,6 +11,21 @@ External payment backend for AutiEase subscription billing.
 - `POST /api/v1/subscription/reactivate`
 - `POST /api/v1/subscription/reconcile-expired`
 
+## Checkout contract
+`POST /api/v1/checkout/session` requires:
+- `therapistId`
+- `productId`
+- `successUrl`
+- `cancelUrl`
+
+Server validates that:
+- `therapist_profiles/{therapistId}.subscriptionProductId` exists
+- it matches `productId`
+- the referenced `subscription_products/{productId}` is active
+
+Subscription document id is deterministic:
+- `subscriptions/{userId}_{therapistId}`
+
 ## Required env vars
 - `FIREBASE_PROJECT_ID=autiease-fyp-2026`
 - `PAYFAST_BASE_URL=https://ipguat.apps.net.pk/Ecommerce/api/Transaction`

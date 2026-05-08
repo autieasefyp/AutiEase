@@ -2,14 +2,13 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_runtime_config.dart';
 import '../models/app_models.dart';
 import '../services/auth_verification_policy.dart';
 import '../services/dashboard_metrics_calculator.dart';
-import '../services/play_billing_service.dart';
+import '../services/payment_backend_client.dart';
 
 class FirestoreCollections {
   static const users = 'users';
@@ -379,7 +378,7 @@ class FirebaseUserRepository implements UserRepository {
       'certificatePdfName': profile.certificatePdfName,
       'certificateUrl': profile.certificateUrl,
       'reportSuggestions': profile.reportSuggestions,
-      'playProductId': profile.playProductId,
+      'subscriptionProductId': profile.subscriptionProductId,
       'updatedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -1186,86 +1185,16 @@ class FirebaseSupportRepository implements SupportRepository {
 
 class FirebaseBillingRepository implements BillingRepository {
   FirebaseBillingRepository(this._auth, this._firestore)
-    : _playBilling = PlayBillingService(
-        resolveTherapistId: ((productId) =>
-            _resolveTherapistIdByProductId(_firestore, productId)),
-        onPurchaseEvent: ((event) =>
-            _persistPurchaseEvent(_auth, _firestore, event)),
-      ) {
-    if (_isAndroidBillingSupported) {
-      unawaited(syncSubscriptions());
-    }
+    : _paymentBackend = PaymentBackendClient(_auth) {
+    unawaited(syncSubscriptions());
   }
 
   final FirebaseAuth _auth;
   final FirebaseFirestore _firestore;
-  final PlayBillingService _playBilling;
-
-  static bool get _isAndroidBillingSupported =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  final PaymentBackendClient _paymentBackend;
 
   static String _subscriptionDocId(String userId, String therapistId) =>
       '${userId.trim()}_${therapistId.trim()}';
-
-  static Future<String?> _resolveTherapistIdByProductId(
-    FirebaseFirestore firestore,
-    String productId,
-  ) async {
-    final normalizedProductId = productId.trim();
-    if (normalizedProductId.isEmpty) {
-      return null;
-    }
-    final snapshot = await firestore
-        .collection(FirestoreCollections.therapistProfiles)
-        .where('playProductId', isEqualTo: normalizedProductId)
-        .limit(1)
-        .get();
-    if (snapshot.docs.isEmpty) {
-      return null;
-    }
-    return snapshot.docs.first.id;
-  }
-
-  static Future<void> _persistPurchaseEvent(
-    FirebaseAuth auth,
-    FirebaseFirestore firestore,
-    PlaySubscriptionPurchaseEvent event,
-  ) async {
-    final userId = auth.currentUser?.uid;
-    if (userId == null) {
-      return;
-    }
-    final docId = _subscriptionDocId(userId, event.therapistId);
-    final now = FieldValue.serverTimestamp();
-    final estimatedPeriodEnd = event.purchaseDate?.add(
-      const Duration(days: 30),
-    );
-
-    await firestore
-        .collection(FirestoreCollections.subscriptions)
-        .doc(docId)
-        .set({
-          'userId': userId,
-          'therapistId': event.therapistId,
-          'productId': event.productId,
-          'purchaseToken': event.purchaseToken,
-          'status': event.status,
-          'isActive': event.isActive,
-          'cancelAtPeriodEnd': event.cancelAtPeriodEnd,
-          'currentPeriodEnd': event.isActive ? estimatedPeriodEnd : null,
-          'platform': 'android_play',
-          'provider': 'android_play',
-          'providerTransactionId': event.purchaseId,
-          'providerCustomerRef': userId,
-          'lastPaymentRef': event.orderId.isNotEmpty
-              ? event.orderId
-              : event.purchaseId,
-          'updatedAt': now,
-          'createdAt': now,
-        }, SetOptions(merge: true));
-
-    await _updateUserEntitlements(firestore, userId);
-  }
 
   static Future<void> _updateUserEntitlements(
     FirebaseFirestore firestore,
@@ -1274,7 +1203,7 @@ class FirebaseBillingRepository implements BillingRepository {
     final activeSnapshot = await firestore
         .collection(FirestoreCollections.subscriptions)
         .where('userId', isEqualTo: userId)
-        .where('isActive', isEqualTo: true)
+        .where('status', whereIn: const ['active', 'trialing'])
         .limit(1)
         .get();
     final hasActive = activeSnapshot.docs.isNotEmpty;
@@ -1301,13 +1230,61 @@ class FirebaseBillingRepository implements BillingRepository {
     );
   }
 
-  void _assertAndroidBilling() {
-    if (_isAndroidBillingSupported) {
-      return;
+  String _requireAuthenticatedUser({required String action}) {
+    final userId = _auth.currentUser?.uid;
+    if (userId == null) {
+      throw StateError('You need to be logged in to $action.');
     }
-    throw StateError(
-      'Subscriptions are currently available on Android devices only.',
-    );
+    return userId;
+  }
+
+  Future<String> _resolveProductIdForTherapist(String therapistId) async {
+    final therapistSnapshot = await _firestore
+        .collection(FirestoreCollections.therapistProfiles)
+        .doc(therapistId)
+        .get();
+    final therapistData =
+        therapistSnapshot.data() ?? const <String, dynamic>{};
+    final productId = (therapistData['subscriptionProductId'] ?? '')
+        .toString()
+        .trim();
+    if (productId.isEmpty) {
+      throw StateError(
+        'This therapist is not linked to a subscription product. '
+        'Set `subscriptionProductId` in therapist profile.',
+      );
+    }
+    return productId;
+  }
+
+  Future<bool> _waitForSubscriptionActivation({
+    required String userId,
+    required String therapistId,
+    Duration timeout = const Duration(minutes: 2),
+  }) async {
+    final docId = _subscriptionDocId(userId, therapistId);
+    final startedAt = DateTime.now();
+    while (DateTime.now().difference(startedAt) < timeout) {
+      final snapshot = await _firestore
+          .collection(FirestoreCollections.subscriptions)
+          .doc(docId)
+          .get();
+      if (snapshot.exists && snapshot.data() != null) {
+        final subscription = UserSubscription.fromMap(snapshot.id, snapshot.data()!);
+        if (subscription.isActive) {
+          return true;
+        }
+        final status = subscription.status.trim().toLowerCase();
+        if (status == 'payment_failed' ||
+            status == 'failed' ||
+            status == 'canceled' ||
+            status == 'expired') {
+          return false;
+        }
+      }
+      await Future<void>.delayed(const Duration(seconds: 5));
+    }
+    return false;
   }
 
   @override
@@ -1368,35 +1345,42 @@ class FirebaseBillingRepository implements BillingRepository {
     if (normalizedTherapistId.isEmpty) {
       throw StateError('Missing therapist id.');
     }
-    _assertAndroidBilling();
-
-    final userId = _auth.currentUser?.uid;
-    if (userId == null) {
-      throw StateError('You need to be logged in to purchase a subscription.');
-    }
+    final userId = _requireAuthenticatedUser(action: 'purchase a subscription');
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return true;
     }
-
-    final therapistSnapshot = await _firestore
-        .collection(FirestoreCollections.therapistProfiles)
-        .doc(normalizedTherapistId)
-        .get();
-    final therapistData = therapistSnapshot.data() ?? const <String, dynamic>{};
-    final productId = (therapistData['playProductId'] ?? '').toString().trim();
-    if (productId.isEmpty) {
+    if (!_paymentBackend.isConfigured) {
       throw StateError(
-        'This therapist is not linked to a Google Play subscription product. '
-        'Set `playProductId` in therapist profile.',
+        'Payment backend is not configured. Start app with '
+        '--dart-define=PAYMENT_BACKEND_BASE_URL=https://your-backend-url',
       );
     }
+    final productId = await _resolveProductIdForTherapist(normalizedTherapistId);
 
-    final purchaseResult = await _playBilling.purchaseSubscription(
+    final checkoutUrl = await _paymentBackend.createCheckoutSession(
       therapistId: normalizedTherapistId,
       productId: productId,
+      successUrl: AppRuntimeConfig.paymentSuccessUrl,
+      cancelUrl: AppRuntimeConfig.paymentCancelUrl,
     );
-    await syncSubscriptions();
-    if (purchaseResult.completed) {
+    if (checkoutUrl == null || checkoutUrl.trim().isEmpty) {
+      throw StateError('Payment backend did not return a checkout URL.');
+    }
+
+    final launched = await launchUrl(
+      Uri.parse(checkoutUrl),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched) {
+      throw StateError('Unable to open payment checkout.');
+    }
+
+    final active = await _waitForSubscriptionActivation(
+      userId: userId,
+      therapistId: normalizedTherapistId,
+    );
+    await _updateUserEntitlements(_firestore, userId);
+    if (active) {
       return true;
     }
     final latest = await getSubscriptionForTherapist(normalizedTherapistId);
@@ -1408,8 +1392,6 @@ class FirebaseBillingRepository implements BillingRepository {
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return;
     }
-    _assertAndroidBilling();
-    await _playBilling.restorePurchases();
     final userId = _auth.currentUser?.uid;
     if (userId != null) {
       await _updateUserEntitlements(_firestore, userId);
@@ -1427,48 +1409,31 @@ class FirebaseBillingRepository implements BillingRepository {
     if (normalizedTherapistId.isEmpty) {
       throw StateError('Missing therapist id.');
     }
-    _assertAndroidBilling();
-
-    final userId = _auth.currentUser?.uid;
-    if (userId == null) {
-      throw StateError('You need to be logged in to manage subscriptions.');
-    }
+    final userId = _requireAuthenticatedUser(
+      action: 'manage subscriptions',
+    );
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return;
     }
-
-    final therapistSnapshot = await _firestore
-        .collection(FirestoreCollections.therapistProfiles)
-        .doc(normalizedTherapistId)
-        .get();
-    final productId = (therapistSnapshot.data()?['playProductId'] ?? '')
-        .toString()
-        .trim();
-    if (productId.isEmpty) {
+    if (!_paymentBackend.isConfigured) {
       throw StateError(
-        'This therapist has no linked Google Play product to manage.',
+        'Payment backend is not configured. Start app with '
+        '--dart-define=PAYMENT_BACKEND_BASE_URL=https://your-backend-url',
       );
     }
 
-    final uri = Uri.parse(
-      'https://play.google.com/store/account/subscriptions?sku=$productId&package=com.example.autiease',
-    );
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!launched) {
-      throw StateError('Unable to open Google Play subscription management.');
-    }
-
     final docId = _subscriptionDocId(userId, normalizedTherapistId);
+    await _paymentBackend.cancelSubscription(docId);
     final subscriptionRef = _firestore
         .collection(FirestoreCollections.subscriptions)
         .doc(docId);
     final snapshot = await subscriptionRef.get();
     if (snapshot.exists) {
       await subscriptionRef.set({
-        'status': 'active',
         'cancelAtPeriodEnd': true,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }
+    await _updateUserEntitlements(_firestore, userId);
   }
 }
