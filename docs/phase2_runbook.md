@@ -9,7 +9,7 @@ This runbook is the release checklist for Phase 2 hardening.
   - Firestore `users/{uid}` deletion cascades to Auth + dependent data.
   - Firebase Auth user deletion cascades to Firestore `users/{uid}` + dependent data.
 - Local admin cleanup script added for stale test accounts.
-- Billing path migrated to external payment backend (GoPayFast + Spark-compatible Firebase setup).
+- Billing path migrated to Google Play Billing MVP (Android-first, client-side entitlement writes).
 
 ## Deploy Commands (Core App)
 Run from repo root:
@@ -19,12 +19,10 @@ Run from repo root:
 2. Deploy rules:
 `firebase deploy --only firestore:rules`
 
-## Payments Backend Deploy
-- Use `payment-backend/` service and deploy to Render/Railway/Fly.
-- Full guide: `docs/payfast_payment_backend.md`
-- Run Flutter with:
-`--dart-define=PAYMENT_BACKEND_BASE_URL=...`
-- For local demo testing without live gateway, run backend with `PAYMENTS_MOCK_MODE=true`.
+## Payments Setup
+- Android subscription guide: `docs/google_play_billing_mvp.md`
+- Set `therapist_profiles/{therapistId}.playProductId` for each sellable therapist.
+- Purchase is Android-only in this phase; iOS/web paid flow is disabled.
 
 ## Regression Commands
 Run from repo root:

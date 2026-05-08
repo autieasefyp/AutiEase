@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_runtime_config.dart';
 import '../models/app_models.dart';
 import '../services/auth_verification_policy.dart';
 import '../services/dashboard_metrics_calculator.dart';
-import '../services/payment_backend_client.dart';
+import '../services/play_billing_service.dart';
 
 class FirestoreCollections {
   static const users = 'users';
@@ -115,15 +119,12 @@ abstract class SupportRepository {
 }
 
 abstract class BillingRepository {
-  Future<List<SubscriptionProduct>> listProducts();
-  Future<UserSubscription?> getCurrentSubscription();
-  Future<String?> createCheckoutSession({
-    required String productId,
-    required String successUrl,
-    required String cancelUrl,
-  });
-  Future<void> cancelSubscription(String subscriptionId);
-  Future<void> reactivateSubscription(String subscriptionId);
+  Future<UserSubscription?> getSubscriptionForTherapist(String therapistId);
+  Stream<UserSubscription?> watchSubscriptionForTherapist(String therapistId);
+  Future<bool> purchaseTherapistSubscription(String therapistId);
+  Future<void> restorePurchases();
+  Future<void> syncSubscriptions();
+  Future<void> cancelSubscriptionInStore(String therapistId);
 }
 
 class AppRepositories {
@@ -131,9 +132,6 @@ class AppRepositories {
 
   static final FirebaseFirestore firestore = FirebaseFirestore.instance;
   static final FirebaseAuth authClient = FirebaseAuth.instance;
-  static final PaymentBackendClient paymentBackend = PaymentBackendClient(
-    authClient,
-  );
 
   static final AuthRepository auth = FirebaseAuthRepository(
     authClient,
@@ -152,7 +150,6 @@ class AppRepositories {
   static final BillingRepository billing = FirebaseBillingRepository(
     authClient,
     firestore,
-    paymentBackend,
   );
 }
 
@@ -382,6 +379,7 @@ class FirebaseUserRepository implements UserRepository {
       'certificatePdfName': profile.certificatePdfName,
       'certificateUrl': profile.certificateUrl,
       'reportSuggestions': profile.reportSuggestions,
+      'playProductId': profile.playProductId,
       'updatedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -1187,127 +1185,290 @@ class FirebaseSupportRepository implements SupportRepository {
 }
 
 class FirebaseBillingRepository implements BillingRepository {
-  FirebaseBillingRepository(this._auth, this._firestore, this._paymentBackend);
+  FirebaseBillingRepository(this._auth, this._firestore)
+    : _playBilling = PlayBillingService(
+        resolveTherapistId: ((productId) =>
+            _resolveTherapistIdByProductId(_firestore, productId)),
+        onPurchaseEvent: ((event) =>
+            _persistPurchaseEvent(_auth, _firestore, event)),
+      ) {
+    if (_isAndroidBillingSupported) {
+      unawaited(syncSubscriptions());
+    }
+  }
 
   final FirebaseAuth _auth;
   final FirebaseFirestore _firestore;
-  final PaymentBackendClient _paymentBackend;
+  final PlayBillingService _playBilling;
 
-  UserSubscription _localBypassSubscription(String userId) {
+  static bool get _isAndroidBillingSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  static String _subscriptionDocId(String userId, String therapistId) =>
+      '${userId.trim()}_${therapistId.trim()}';
+
+  static Future<String?> _resolveTherapistIdByProductId(
+    FirebaseFirestore firestore,
+    String productId,
+  ) async {
+    final normalizedProductId = productId.trim();
+    if (normalizedProductId.isEmpty) {
+      return null;
+    }
+    final snapshot = await firestore
+        .collection(FirestoreCollections.therapistProfiles)
+        .where('playProductId', isEqualTo: normalizedProductId)
+        .limit(1)
+        .get();
+    if (snapshot.docs.isEmpty) {
+      return null;
+    }
+    return snapshot.docs.first.id;
+  }
+
+  static Future<void> _persistPurchaseEvent(
+    FirebaseAuth auth,
+    FirebaseFirestore firestore,
+    PlaySubscriptionPurchaseEvent event,
+  ) async {
+    final userId = auth.currentUser?.uid;
+    if (userId == null) {
+      return;
+    }
+    final docId = _subscriptionDocId(userId, event.therapistId);
+    final now = FieldValue.serverTimestamp();
+    final estimatedPeriodEnd = event.purchaseDate?.add(
+      const Duration(days: 30),
+    );
+
+    await firestore
+        .collection(FirestoreCollections.subscriptions)
+        .doc(docId)
+        .set({
+          'userId': userId,
+          'therapistId': event.therapistId,
+          'productId': event.productId,
+          'purchaseToken': event.purchaseToken,
+          'status': event.status,
+          'isActive': event.isActive,
+          'cancelAtPeriodEnd': event.cancelAtPeriodEnd,
+          'currentPeriodEnd': event.isActive ? estimatedPeriodEnd : null,
+          'platform': 'android_play',
+          'provider': 'android_play',
+          'providerTransactionId': event.purchaseId,
+          'providerCustomerRef': userId,
+          'lastPaymentRef': event.orderId.isNotEmpty
+              ? event.orderId
+              : event.purchaseId,
+          'updatedAt': now,
+          'createdAt': now,
+        }, SetOptions(merge: true));
+
+    await _updateUserEntitlements(firestore, userId);
+  }
+
+  static Future<void> _updateUserEntitlements(
+    FirebaseFirestore firestore,
+    String userId,
+  ) async {
+    final activeSnapshot = await firestore
+        .collection(FirestoreCollections.subscriptions)
+        .where('userId', isEqualTo: userId)
+        .where('isActive', isEqualTo: true)
+        .limit(1)
+        .get();
+    final hasActive = activeSnapshot.docs.isNotEmpty;
+    await firestore.collection(FirestoreCollections.users).doc(userId).set({
+      'subscriptionTier': hasActive ? 'professional-support' : 'free',
+      'entitlements': {
+        'professionalSupport': hasActive,
+        'chatAccess': hasActive,
+      },
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  UserSubscription _localBypassSubscription(String userId, String therapistId) {
     return UserSubscription(
-      id: 'dev-bypass',
+      id: _subscriptionDocId(userId, therapistId),
       userId: userId,
+      therapistId: therapistId,
       productId: 'bypass-plan',
       status: 'active',
+      isActive: true,
       cancelAtPeriodEnd: false,
       currentPeriodEnd: DateTime.now().add(const Duration(days: 3650)),
     );
   }
 
-  bool _isCurrentlyActive(UserSubscription subscription) {
-    if (!subscription.isActive) {
-      return false;
+  void _assertAndroidBilling() {
+    if (_isAndroidBillingSupported) {
+      return;
     }
-    final periodEnd = subscription.currentPeriodEnd;
-    if (periodEnd == null) {
-      return true;
-    }
-    return periodEnd.isAfter(DateTime.now());
+    throw StateError(
+      'Subscriptions are currently available on Android devices only.',
+    );
   }
 
   @override
-  Future<List<SubscriptionProduct>> listProducts() async {
-    final snapshot = await _firestore
-        .collection(FirestoreCollections.subscriptionProducts)
-        .where('isActive', isEqualTo: true)
-        .get();
-    return snapshot.docs
-        .map((doc) => SubscriptionProduct.fromMap(doc.id, doc.data()))
-        .toList();
-  }
-
-  @override
-  Future<UserSubscription?> getCurrentSubscription() async {
+  Future<UserSubscription?> getSubscriptionForTherapist(
+    String therapistId,
+  ) async {
+    final normalizedTherapistId = therapistId.trim();
+    if (normalizedTherapistId.isEmpty) {
+      return null;
+    }
     final userId = _auth.currentUser?.uid;
     if (userId == null) {
       return null;
     }
     if (AppRuntimeConfig.bypassProSupportPaywall) {
-      return _localBypassSubscription(userId);
+      return _localBypassSubscription(userId, normalizedTherapistId);
     }
-    final activeSnapshot = await _firestore
+    final docId = _subscriptionDocId(userId, normalizedTherapistId);
+    final snapshot = await _firestore
         .collection(FirestoreCollections.subscriptions)
-        .where('userId', isEqualTo: userId)
-        .where('status', whereIn: ['active', 'trialing'])
-        .limit(1)
+        .doc(docId)
         .get();
-    if (activeSnapshot.docs.isNotEmpty) {
-      final subscription = UserSubscription.fromMap(
-        activeSnapshot.docs.first.id,
-        activeSnapshot.docs.first.data(),
-      );
-      if (_isCurrentlyActive(subscription)) {
-        return subscription;
-      }
-    }
-
-    final fallbackSnapshot = await _firestore
-        .collection(FirestoreCollections.subscriptions)
-        .where('userId', isEqualTo: userId)
-        .limit(1)
-        .get();
-    if (fallbackSnapshot.docs.isEmpty) {
+    if (!snapshot.exists || snapshot.data() == null) {
       return null;
     }
-    return UserSubscription.fromMap(
-      fallbackSnapshot.docs.first.id,
-      fallbackSnapshot.docs.first.data(),
-    );
+    return UserSubscription.fromMap(snapshot.id, snapshot.data()!);
   }
 
   @override
-  Future<String?> createCheckoutSession({
-    required String productId,
-    required String successUrl,
-    required String cancelUrl,
-  }) async {
-    if (AppRuntimeConfig.bypassProSupportPaywall) {
-      return 'mock://dev-bypass';
+  Stream<UserSubscription?> watchSubscriptionForTherapist(String therapistId) {
+    final normalizedTherapistId = therapistId.trim();
+    final userId = _auth.currentUser?.uid;
+    if (userId == null || normalizedTherapistId.isEmpty) {
+      return const Stream<UserSubscription?>.empty();
     }
-    return _paymentBackend.createCheckoutSession(
+    if (AppRuntimeConfig.bypassProSupportPaywall) {
+      return Stream<UserSubscription?>.value(
+        _localBypassSubscription(userId, normalizedTherapistId),
+      );
+    }
+    final docId = _subscriptionDocId(userId, normalizedTherapistId);
+    return _firestore
+        .collection(FirestoreCollections.subscriptions)
+        .doc(docId)
+        .snapshots()
+        .map((snapshot) {
+          final data = snapshot.data();
+          if (!snapshot.exists || data == null) {
+            return null;
+          }
+          return UserSubscription.fromMap(snapshot.id, data);
+        });
+  }
+
+  @override
+  Future<bool> purchaseTherapistSubscription(String therapistId) async {
+    final normalizedTherapistId = therapistId.trim();
+    if (normalizedTherapistId.isEmpty) {
+      throw StateError('Missing therapist id.');
+    }
+    _assertAndroidBilling();
+
+    final userId = _auth.currentUser?.uid;
+    if (userId == null) {
+      throw StateError('You need to be logged in to purchase a subscription.');
+    }
+    if (AppRuntimeConfig.bypassProSupportPaywall) {
+      return true;
+    }
+
+    final therapistSnapshot = await _firestore
+        .collection(FirestoreCollections.therapistProfiles)
+        .doc(normalizedTherapistId)
+        .get();
+    final therapistData = therapistSnapshot.data() ?? const <String, dynamic>{};
+    final productId = (therapistData['playProductId'] ?? '').toString().trim();
+    if (productId.isEmpty) {
+      throw StateError(
+        'This therapist is not linked to a Google Play subscription product. '
+        'Set `playProductId` in therapist profile.',
+      );
+    }
+
+    final purchaseResult = await _playBilling.purchaseSubscription(
+      therapistId: normalizedTherapistId,
       productId: productId,
-      successUrl: successUrl,
-      cancelUrl: cancelUrl,
     );
+    await syncSubscriptions();
+    if (purchaseResult.completed) {
+      return true;
+    }
+    final latest = await getSubscriptionForTherapist(normalizedTherapistId);
+    return latest?.isActive == true;
   }
 
   @override
-  Future<void> cancelSubscription(String subscriptionId) async {
+  Future<void> restorePurchases() async {
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return;
     }
-    await _paymentBackend.cancelSubscription(subscriptionId);
-    await _firestore
-        .collection(FirestoreCollections.subscriptions)
-        .doc(subscriptionId)
-        .set({
-          'cancelAtPeriodEnd': true,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+    _assertAndroidBilling();
+    await _playBilling.restorePurchases();
+    final userId = _auth.currentUser?.uid;
+    if (userId != null) {
+      await _updateUserEntitlements(_firestore, userId);
+    }
   }
 
   @override
-  Future<void> reactivateSubscription(String subscriptionId) async {
+  Future<void> syncSubscriptions() async {
+    await restorePurchases();
+  }
+
+  @override
+  Future<void> cancelSubscriptionInStore(String therapistId) async {
+    final normalizedTherapistId = therapistId.trim();
+    if (normalizedTherapistId.isEmpty) {
+      throw StateError('Missing therapist id.');
+    }
+    _assertAndroidBilling();
+
+    final userId = _auth.currentUser?.uid;
+    if (userId == null) {
+      throw StateError('You need to be logged in to manage subscriptions.');
+    }
     if (AppRuntimeConfig.bypassProSupportPaywall) {
       return;
     }
-    await _paymentBackend.reactivateSubscription(subscriptionId);
-    await _firestore
+
+    final therapistSnapshot = await _firestore
+        .collection(FirestoreCollections.therapistProfiles)
+        .doc(normalizedTherapistId)
+        .get();
+    final productId = (therapistSnapshot.data()?['playProductId'] ?? '')
+        .toString()
+        .trim();
+    if (productId.isEmpty) {
+      throw StateError(
+        'This therapist has no linked Google Play product to manage.',
+      );
+    }
+
+    final uri = Uri.parse(
+      'https://play.google.com/store/account/subscriptions?sku=$productId&package=com.example.autiease',
+    );
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!launched) {
+      throw StateError('Unable to open Google Play subscription management.');
+    }
+
+    final docId = _subscriptionDocId(userId, normalizedTherapistId);
+    final subscriptionRef = _firestore
         .collection(FirestoreCollections.subscriptions)
-        .doc(subscriptionId)
-        .set({
-          'cancelAtPeriodEnd': false,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+        .doc(docId);
+    final snapshot = await subscriptionRef.get();
+    if (snapshot.exists) {
+      await subscriptionRef.set({
+        'status': 'active',
+        'cancelAtPeriodEnd': true,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
   }
 }

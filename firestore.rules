@@ -27,6 +27,25 @@ service cloud.firestore {
         (threadData.parentId == request.auth.uid || threadData.therapistId == request.auth.uid);
     }
 
+    function isAllowedSubscriptionStatus(status) {
+      return status in ['pending', 'active', 'canceled', 'error', 'inactive'];
+    }
+
+    function validSubscriptionShape(subscriptionId) {
+      return request.resource.data.userId == request.auth.uid &&
+        request.resource.data.therapistId is string &&
+        request.resource.data.therapistId.size() > 0 &&
+        request.resource.data.productId is string &&
+        request.resource.data.productId.size() > 0 &&
+        request.resource.data.purchaseToken is string &&
+        request.resource.data.status is string &&
+        isAllowedSubscriptionStatus(request.resource.data.status) &&
+        request.resource.data.isActive is bool &&
+        request.resource.data.cancelAtPeriodEnd is bool &&
+        request.resource.data.platform == 'android_play' &&
+        subscriptionId == request.auth.uid + '_' + request.resource.data.therapistId;
+    }
+
     match /users/{userId} {
       allow read, update: if signedIn() && request.auth.uid == userId;
       allow create: if signedIn() && request.auth.uid == userId;
@@ -110,7 +129,13 @@ service cloud.firestore {
 
     match /subscriptions/{subscriptionId} {
       allow read: if signedIn() && resource.data.userId == request.auth.uid;
-      allow write: if false;
+      allow create: if signedIn() && validSubscriptionShape(subscriptionId);
+      allow update: if signedIn() &&
+        validSubscriptionShape(subscriptionId) &&
+        resource.data.userId == request.resource.data.userId &&
+        resource.data.therapistId == request.resource.data.therapistId &&
+        resource.data.productId == request.resource.data.productId;
+      allow delete: if false;
     }
 
     match /legal_documents/{document=**} {

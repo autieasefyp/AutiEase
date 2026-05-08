@@ -738,6 +738,7 @@ class TherapistProfile {
     this.certificatePdfName = '',
     this.certificateUrl = '',
     this.reportSuggestions = const <String>[],
+    this.playProductId = '',
   });
 
   final String id;
@@ -754,6 +755,7 @@ class TherapistProfile {
   final String certificatePdfName;
   final String certificateUrl;
   final List<String> reportSuggestions;
+  final String playProductId;
 
   factory TherapistProfile.fromMap(String id, Map<String, dynamic> data) {
     final rawRating = data['rating'];
@@ -772,6 +774,7 @@ class TherapistProfile {
       certificatePdfName: (data['certificatePdfName'] ?? '').toString(),
       certificateUrl: (data['certificateUrl'] ?? '').toString(),
       reportSuggestions: stringListFrom(data['reportSuggestions']),
+      playProductId: (data['playProductId'] ?? '').toString(),
     );
   }
 }
@@ -965,8 +968,10 @@ class UserSubscription {
   const UserSubscription({
     required this.id,
     required this.userId,
+    required this.therapistId,
     required this.productId,
     required this.status,
+    required this.isActive,
     required this.cancelAtPeriodEnd,
     this.currentPeriodEnd,
     this.provider = '',
@@ -977,8 +982,10 @@ class UserSubscription {
 
   final String id;
   final String userId;
+  final String therapistId;
   final String productId;
   final String status;
+  final bool isActive;
   final bool cancelAtPeriodEnd;
   final DateTime? currentPeriodEnd;
   final String provider;
@@ -986,14 +993,18 @@ class UserSubscription {
   final String providerCustomerRef;
   final String lastPaymentRef;
 
-  bool get isActive => status == 'active' || status == 'trialing';
-
   factory UserSubscription.fromMap(String id, Map<String, dynamic> data) {
+    final rawStatus = (data['status'] ?? 'inactive').toString();
+    final rawIsActive = data['isActive'];
     return UserSubscription(
       id: id,
       userId: (data['userId'] ?? '').toString(),
+      therapistId: (data['therapistId'] ?? '').toString(),
       productId: (data['productId'] ?? '').toString(),
-      status: (data['status'] ?? 'inactive').toString(),
+      status: rawStatus,
+      isActive: rawIsActive is bool
+          ? rawIsActive
+          : rawStatus == 'active' || rawStatus == 'trialing',
       cancelAtPeriodEnd: data['cancelAtPeriodEnd'] == true,
       currentPeriodEnd: dateTimeFromFirestore(data['currentPeriodEnd']),
       provider: (data['provider'] ?? '').toString(),

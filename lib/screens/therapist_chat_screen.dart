@@ -341,25 +341,9 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
     }
 
     try {
-      final subscriptionId = widget.thread.subscriptionId.trim();
-      final canCallPaymentBackend =
-          AppRepositories.paymentBackend.isConfigured &&
-          subscriptionId.isNotEmpty;
-
-      if (canCallPaymentBackend) {
-        try {
-          await AppRepositories.billing.cancelSubscription(subscriptionId);
-        } catch (error) {
-          final message = error.toString();
-          final backendNotConfigured =
-              message.contains('Payment backend is not configured') ||
-              message.contains('PAYMENT_BACKEND_BASE_URL');
-          if (!backendNotConfigured) {
-            rethrow;
-          }
-          // In local/demo mode, proceed with in-app cancellation state.
-        }
-      }
+      await AppRepositories.billing.cancelSubscriptionInStore(
+        widget.thread.therapistId,
+      );
 
       await _persistHiddenTherapist(widget.thread.therapistId);
       if (!mounted) {
@@ -367,7 +351,7 @@ class _TherapistChatScreenState extends State<TherapistChatScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Subscription canceled.'),
+          content: Text('Opened Google Play subscription settings.'),
           backgroundColor: Colors.green,
         ),
       );

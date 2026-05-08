@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../config/app_runtime_config.dart';
 import '../models/app_models.dart';
 import '../repositories/app_repositories.dart';
 import '../utils/app_colors.dart';
@@ -52,6 +52,8 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
   final Set<String> _hiddenTherapistIds = _sessionHiddenTherapistIds;
   bool _showFindTherapist = false;
   bool _stateLoaded = false;
+  bool get _isAndroidBilling =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   void _showComingSoon() {
     if (!mounted) {
@@ -99,6 +101,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
     } catch (_) {
       // Keep session state fallback even if persistence read fails.
     } finally {
+      await _syncSubscribedTherapistsFromBackend();
       if (mounted) {
         setState(() => _stateLoaded = true);
       }
@@ -143,91 +146,67 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
     };
   }
 
-  bool _isTherapistSubscribed(
-    TherapistProfile therapist,
-    int index,
-    bool hasBackendSubscription,
-  ) {
-    if (!hasBackendSubscription) {
-      return false;
+  Future<void> _syncSubscribedTherapistsFromBackend() async {
+    final activeIds = await _loadActiveSubscribedTherapistIds();
+    _subscribedTherapistIds
+      ..clear()
+      ..addAll(activeIds);
+    await _persistTherapistState();
+  }
+
+  Future<Set<String>> _loadActiveSubscribedTherapistIds() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      return <String>{};
     }
-    if (_subscribedTherapistIds.contains(therapist.id)) {
-      return true;
-    }
-    return _subscribedTherapistIds.isEmpty && index == 0;
+    final snapshot = await FirebaseFirestore.instance
+        .collection(FirestoreCollections.subscriptions)
+        .where('userId', isEqualTo: uid)
+        .where('isActive', isEqualTo: true)
+        .get();
+    return snapshot.docs
+        .map((doc) => (doc.data()['therapistId'] ?? '').toString().trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
   }
 
   Future<bool> _openCheckoutForTherapist(TherapistProfile therapist) async {
     try {
-      final products = await AppRepositories.billing.listProducts();
-      final activeProducts = products
-          .where((product) => product.isActive)
-          .toList();
-      if (activeProducts.isEmpty) {
-        throw StateError('No active subscription product found.');
-      }
-
-      final checkoutUrl = await AppRepositories.billing.createCheckoutSession(
-        productId: activeProducts.first.id,
-        successUrl: AppRuntimeConfig.paymentSuccessUrl,
-        cancelUrl: AppRuntimeConfig.paymentCancelUrl,
-      );
-
-      if (!mounted) return false;
-      if (checkoutUrl == null || checkoutUrl.trim().isEmpty) {
-        throw StateError('Payment checkout URL was not returned by backend.');
-      }
-
-      final uri = Uri.tryParse(checkoutUrl.trim());
-      if (uri == null) {
-        throw StateError('Invalid checkout URL from backend.');
-      }
-
-      if (uri.scheme == 'mock') {
-        setState(() {
-          _subscribedTherapistIds.add(therapist.id);
-          _hiddenTherapistIds.remove(therapist.id);
-        });
-        await _persistTherapistState();
-        if (!mounted) return true;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Local dev bypass subscription activated.'),
-            backgroundColor: Color(0xFF00C853),
-          ),
+      if (!_isAndroidBilling) {
+        throw StateError(
+          'Subscriptions are currently available on Android devices only.',
         );
-        return true;
       }
-
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!launched) {
-        throw StateError('Unable to open checkout in browser.');
-      }
-
+      final subscribed = await AppRepositories.billing
+          .purchaseTherapistSubscription(therapist.id);
+      await _syncSubscribedTherapistsFromBackend();
       setState(() {
         _hiddenTherapistIds.remove(therapist.id);
       });
-      await _persistTherapistState();
-      if (!mounted) return false;
+
+      if (!mounted) {
+        return subscribed;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'Secure checkout opened. After successful payment, return to app and refresh this screen.',
+            subscribed
+                ? 'Google Play subscription activated.'
+                : 'Purchase flow finished. Pull to refresh or tap Restore Purchases if access is not updated yet.',
           ),
-          backgroundColor: Color(0xFF00C853),
+          backgroundColor: subscribed
+              ? const Color(0xFF00C853)
+              : const Color(0xFF00A63E),
         ),
       );
-      return false;
+      return subscribed;
     } catch (error) {
       if (!mounted) {
         return false;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Unable to start checkout: $error'),
+          content: Text('Unable to start subscription: $error'),
           backgroundColor: AppColors.errorRed,
         ),
       );
@@ -235,20 +214,52 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
     }
   }
 
+  Future<void> _restorePurchases() async {
+    try {
+      if (!_isAndroidBilling) {
+        throw StateError(
+          'Restore is available on Android devices only for this release.',
+        );
+      }
+      await AppRepositories.billing.restorePurchases();
+      await _syncSubscribedTherapistsFromBackend();
+      if (!mounted) {
+        return;
+      }
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Google Play purchases restored.'),
+          backgroundColor: Color(0xFF00C853),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to restore purchases: $error'),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
+    }
+  }
+
   Future<void> _cancelTherapistSubscription(TherapistProfile therapist) async {
     try {
-      final subscription = await AppRepositories.billing
-          .getCurrentSubscription();
-      if (subscription != null && subscription.id.trim().isNotEmpty) {
-        await AppRepositories.billing.cancelSubscription(subscription.id);
+      if (!_isAndroidBilling) {
+        throw StateError(
+          'Subscription management is currently available on Android devices only.',
+        );
       }
+      await AppRepositories.billing.cancelSubscriptionInStore(therapist.id);
 
       if (!mounted) {
         return;
       }
       setState(() {
         _subscribedTherapistIds.remove(therapist.id);
-        _hiddenTherapistIds.add(therapist.id);
       });
       await _persistTherapistState();
       if (!mounted) {
@@ -257,7 +268,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Subscription cancel request submitted for ${therapist.displayName}.',
+            'Opened Google Play subscription management for ${therapist.displayName}.',
           ),
           backgroundColor: AppColors.errorRed,
         ),
@@ -309,7 +320,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
       final child = await AppRepositories.users
           .getActiveChildForCurrentParent();
       final subscription = await AppRepositories.billing
-          .getCurrentSubscription();
+          .getSubscriptionForTherapist(therapist.id);
       if (!mounted) return;
 
       if (child == null) {
@@ -322,8 +333,8 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
         return;
       }
 
-      final hasActiveBackendSubscription = subscription?.isActive == true;
-      if (!hasActiveBackendSubscription) {
+      final hasActiveSubscription = subscription?.isActive == true;
+      if (!hasActiveSubscription) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Please subscribe to this therapist first.'),
@@ -336,9 +347,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
       final thread = await AppRepositories.support.ensureThread(
         therapistId: therapist.id,
         childId: child.id,
-        subscriptionId: (subscription != null && subscription.isActive)
-            ? subscription.id
-            : '',
+        subscriptionId: hasActiveSubscription ? subscription!.id : '',
       );
       if (!mounted) return;
       Navigator.push(
@@ -375,7 +384,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
           therapist: therapist,
           initiallySubscribed: isSubscribed,
           chatEnabled: featureFlags.chatEnabled,
-          paymentsEnabled: featureFlags.paymentsEnabled,
+          paymentsEnabled: featureFlags.paymentsEnabled && _isAndroidBilling,
           onSubscribe: () => _openCheckoutForTherapist(therapist),
           onCancelSubscription: () => _cancelTherapistSubscription(therapist),
           onOpenMessages: () => _openTherapistChat(
@@ -408,7 +417,7 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
               return FutureBuilder<List<Object?>>(
                 future: Future.wait<Object?>([
                   AppRepositories.support.listTherapists(),
-                  AppRepositories.billing.getCurrentSubscription(),
+                  _loadActiveSubscribedTherapistIds(),
                   _loadSubscribedTherapistsIncludingInactive(),
                 ]),
                 builder: (context, snapshot) {
@@ -418,11 +427,14 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
 
                   final activeTherapists =
                       snapshot.data?[0] as List<TherapistProfile>? ?? const [];
-                  final subscription = snapshot.data?[1] as UserSubscription?;
+                  final activeSubscribedIds =
+                      snapshot.data?[1] as Set<String>? ?? const <String>{};
+                  _subscribedTherapistIds
+                    ..clear()
+                    ..addAll(activeSubscribedIds);
                   final subscribedTherapists =
                       snapshot.data?[2] as Map<String, TherapistProfile>? ??
                       const <String, TherapistProfile>{};
-                  final hasBackendSubscription = subscription?.isActive == true;
                   final therapistById = <String, TherapistProfile>{
                     for (final therapist in activeTherapists)
                       therapist.id: therapist,
@@ -453,7 +465,6 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
                         child: _showFindTherapist
                             ? _buildFindTherapists(
                                 activeTherapists,
-                                hasBackendSubscription,
                                 featureFlags,
                               )
                             : _buildMessagesHome(
@@ -475,7 +486,6 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
 
   Widget _buildFindTherapists(
     List<TherapistProfile> therapists,
-    bool hasBackendSubscription,
     ProfessionalSupportFeatureFlags featureFlags,
   ) {
     if (therapists.isEmpty) {
@@ -490,23 +500,52 @@ class _ProfessionalSupportScreenState extends State<ProfessionalSupportScreen> {
         ),
       );
     }
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 20),
-      itemCount: therapists.length,
-      itemBuilder: (context, index) {
-        final therapist = therapists[index];
-        final isSubscribed = _isTherapistSubscribed(
-          therapist,
-          index,
-          hasBackendSubscription,
-        );
-        return _TherapistListCard(
-          therapist: therapist,
-          isSubscribed: isSubscribed,
-          onTap: () =>
-              _openTherapistDetails(therapist, isSubscribed, featureFlags),
-        );
-      },
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _isAndroidBilling
+                      ? 'Subscriptions are handled securely with Google Play Billing.'
+                      : 'Subscriptions are currently available on Android.',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF6B7280),
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: _restorePurchases,
+                child: const Text('Restore Purchases'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 20),
+            itemCount: therapists.length,
+            itemBuilder: (context, index) {
+              final therapist = therapists[index];
+              final isSubscribed = _subscribedTherapistIds.contains(
+                therapist.id,
+              );
+              return _TherapistListCard(
+                therapist: therapist,
+                isSubscribed: isSubscribed,
+                onTap: () => _openTherapistDetails(
+                  therapist,
+                  isSubscribed,
+                  featureFlags,
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -1638,8 +1677,8 @@ class _SupportTherapistDetailsScreenState
                     const SizedBox(height: 10),
                     Text(
                       widget.paymentsEnabled
-                          ? 'Secure payment powered by PayFast. Cancel your subscription anytime from your account settings.'
-                          : 'Coming soon',
+                          ? 'Secure payment powered by Google Play Billing. Manage or cancel anytime from your Play subscription settings.'
+                          : 'Subscriptions are currently available on Android.',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 11,
