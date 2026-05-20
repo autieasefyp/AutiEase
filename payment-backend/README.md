@@ -29,8 +29,8 @@ Subscription document id is deterministic:
 ## Required env vars
 - `FIREBASE_PROJECT_ID=autiease-fyp-2026`
 - `PAYFAST_BASE_URL=https://ipguat.apps.net.pk/Ecommerce/api/Transaction`
-- `PAYFAST_MERCHANT_ID=...`
-- `PAYFAST_SECURED_KEY=...`
+- `PAYFAST_MERCHANT_ID=103` (UAT)
+- `PAYFAST_SECURED_KEY=...` (UAT secured key)
 - One Firebase Admin auth mode:
   - `FIREBASE_SERVICE_ACCOUNT_JSON={...}`
   - or `GOOGLE_APPLICATION_CREDENTIALS=/path/service-account.json`
@@ -41,13 +41,23 @@ Subscription document id is deterministic:
 - `PAYFAST_CURRENCY_CODE=PKR`
 - `PAYMENT_REDIRECT_BASE_URL=https://<your-backend-domain>`
 - `PAYFAST_CHECKOUT_URL_FIELD=https://<your-backend-domain>/api/v1/payment/webhook`
-- `PAYFAST_STRICT_WEBHOOK_VERIFICATION=true`
+- `PAYFAST_STRICT_WEBHOOK_VERIFICATION=true` (production-safe mode)
 - `ALLOWED_ORIGINS=https://your-web-origin.example.com`
 - `RECONCILE_CRON_SECRET=<random-secret>`
 
 ## Optional local/dev env vars
 - `PAYMENTS_MOCK_MODE=true` (simulate successful monthly subscription)
 - `MOCK_PAYMENTS=true` (legacy alias)
+
+## UAT temporary callback mode
+- `PAYFAST_CHECKOUT_URL_FIELD=https://webhook.site/<id>`
+- `PAYFAST_STRICT_WEBHOOK_VERIFICATION=false`
+- In this mode, IPN is sent to webhook.site and backend subscription activation from provider callbacks is not exercised.
+
+## IPN hash verification
+- In strict mode (`PAYFAST_STRICT_WEBHOOK_VERIFICATION=true`), webhook verification requires gateway Inquiry API success and validation hash match.
+- Validation hash is SHA-256 of `basket_id|secured_key|merchant_id|err_code`.
+- Hash is read from `validation_hash` (plus common case variants).
 
 ## Local run
 1. `npm install`

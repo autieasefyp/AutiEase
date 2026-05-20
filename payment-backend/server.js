@@ -192,6 +192,10 @@ function normalizeProviderPayload(rawPayload) {
   const responseCode =
     payload.RESPONSE_CODE ||
     payload.response_code ||
+    payload.ERR_CODE ||
+    payload.err_code ||
+    payload.ERROR_CODE ||
+    payload.error_code ||
     payload.RespCode ||
     payload.respCode ||
     payload.code ||
@@ -211,6 +215,46 @@ function normalizeProviderPayload(rawPayload) {
     responseCode: normalizeValue(responseCode),
     status: normalizeValue(status),
     raw: payload,
+  };
+}
+
+function verifyPayFastValidationHash(normalizedPayload) {
+  const payload = normalizedPayload.raw || {};
+  const providedHash = normalizeValue(
+    payload.VALIDATION_HASH ||
+      payload.validation_hash ||
+      payload.HASH ||
+      payload.hash ||
+      payload.SECURE_HASH ||
+      payload.secure_hash,
+  ).toLowerCase();
+  const errorCode = normalizeValue(
+    payload.ERR_CODE ||
+      payload.err_code ||
+      payload.ERROR_CODE ||
+      payload.error_code ||
+      payload.RESPONSE_CODE ||
+      payload.response_code ||
+      normalizedPayload.responseCode,
+  );
+
+  if (!providedHash) {
+    return { verified: false, reason: 'Missing validation hash in webhook payload', errorCode };
+  }
+  if (!normalizedPayload.basketId || !errorCode) {
+    return { verified: false, reason: 'Missing basket id or error code for hash verification', errorCode };
+  }
+
+  const hashInput = `${normalizedPayload.basketId}|${payfastConfig.securedKey}|${payfastConfig.merchantId}|${errorCode}`;
+  const computedHash = crypto.createHash('sha256').update(hashInput, 'utf8').digest('hex').toLowerCase();
+  const verified = computedHash === providedHash;
+
+  return {
+    verified,
+    reason: verified ? '' : 'Validation hash mismatch',
+    errorCode,
+    providedHash,
+    computedHash,
   };
 }
 
@@ -772,9 +816,19 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
     const therapistId = normalizeValue(subscription.therapistId);
 
     const amount = parseAmount(subscription.amount);
-    const verification = await verifyTransactionWithGateway(normalized, amount);
+    const gatewayVerification = payfastConfig.strictWebhookVerification
+      ? await verifyTransactionWithGateway(normalized, amount)
+      : {
+          verified: false,
+          status: '',
+          responseCode: '',
+          reason: 'Skipped gateway inquiry verification (strict mode disabled).',
+        };
+    const hashVerification = verifyPayFastValidationHash(normalized);
     const webhookSuccess = isSuccessStatus(normalized.status, normalized.responseCode);
-    const isSuccess = payfastConfig.strictWebhookVerification ? verification.verified : webhookSuccess || verification.verified;
+    const isSuccess = payfastConfig.strictWebhookVerification
+      ? gatewayVerification.verified && hashVerification.verified
+      : webhookSuccess;
 
     if (isSuccess) {
       await subscriptionDoc.ref.set(
@@ -787,9 +841,13 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
           cancelAtPeriodEnd: false,
           currentPeriodEnd: admin.firestore.Timestamp.fromDate(addDays(new Date(), 30)),
           verification: {
-            verifiedByGateway: verification.verified,
-            responseCode: verification.responseCode || normalized.responseCode,
-            status: verification.status || normalized.status,
+            verifiedByGateway: gatewayVerification.verified,
+            verifiedByHash: hashVerification.verified,
+            responseCode: gatewayVerification.responseCode || normalized.responseCode,
+            status: gatewayVerification.status || normalized.status,
+            hashErrorCode: hashVerification.errorCode || normalized.responseCode,
+            hashProvided: hashVerification.providedHash || '',
+            hashComputed: hashVerification.computedHash || '',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -827,10 +885,18 @@ app.post('/api/v1/payment/webhook', async (req, res) => {
         isActive: false,
         cancelAtPeriodEnd: true,
         verification: {
-          verifiedByGateway: verification.verified,
-          responseCode: verification.responseCode || normalized.responseCode,
-          status: verification.status || normalized.status,
-          reason: verification.reason || 'Transaction failed',
+          verifiedByGateway: gatewayVerification.verified,
+          verifiedByHash: hashVerification.verified,
+          responseCode: gatewayVerification.responseCode || normalized.responseCode,
+          status: gatewayVerification.status || normalized.status,
+          hashErrorCode: hashVerification.errorCode || normalized.responseCode,
+          hashProvided: hashVerification.providedHash || '',
+          hashComputed: hashVerification.computedHash || '',
+          reason:
+            (payfastConfig.strictWebhookVerification &&
+              ((!gatewayVerification.verified && gatewayVerification.reason) ||
+                (!hashVerification.verified && hashVerification.reason))) ||
+            'Transaction failed',
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),

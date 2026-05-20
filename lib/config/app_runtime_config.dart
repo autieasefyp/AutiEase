@@ -8,12 +8,12 @@ class AppRuntimeConfig {
 
   static const paymentSuccessUrl = String.fromEnvironment(
     'PAYMENT_SUCCESS_URL',
-    defaultValue: 'https://autiease.app/success',
+    defaultValue: 'https://example.com/payment-success',
   );
 
   static const paymentCancelUrl = String.fromEnvironment(
     'PAYMENT_CANCEL_URL',
-    defaultValue: 'https://autiease.app/cancel',
+    defaultValue: 'https://example.com/payment-failure',
   );
 
   static const _allowBypassForLocal = bool.fromEnvironment(

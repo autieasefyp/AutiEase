@@ -16,9 +16,9 @@ services:
       - key: PAYFAST_BASE_URL
         value: https://ipguat.apps.net.pk/Ecommerce/api/Transaction
       - key: PAYFAST_MERCHANT_ID
-        sync: false
+        value: "103"
       - key: PAYFAST_SECURED_KEY
-        sync: false
+        value: PzPx6ut-SVay7tCUMqG
       - key: PAYFAST_MERCHANT_NAME
         value: AutiEase
       - key: PAYFAST_CURRENCY_CODE
